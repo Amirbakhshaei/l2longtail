@@ -1,4 +1,6 @@
 gradio>=4.0.0
+spaces>=0.30.0
+torch>=2.0.0
 web3[async]>=7.0.0
 pydantic>=2.9.0
 pydantic-settings>=2.5.0
