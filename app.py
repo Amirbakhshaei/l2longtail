@@ -1,0 +1,203 @@
+"""
+Long-Tail Arbitrage Engine — Hugging Face Spaces Gradio Dashboard
+
+Gradio owns the primary thread for UI + health probes.
+Blockchain loops run in a dedicated daemon thread with their own asyncio event loop.
+Persistent storage at /data/ preserves SQLite state across container restarts.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import os
+import threading
+
+import gradio as gr
+from dotenv import load_dotenv
+
+load_dotenv()
+
+logging.basicConfig(
+    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
+    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+)
+logger = logging.getLogger(__name__)
+
+LOG_FILE_PATH = "paper_trade_1h.log"
+
+
+def start_arbitrage_engine() -> None:
+    """Initializes and executes the async event loop within a daemon background thread."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    loop.run_until_complete(_run_engine())
+
+
+async def _run_engine() -> None:
+    from db.cache import ContractCache
+    from db.cleared_tokens import ClearedTokensDB
+    from infra.flea_market_discovery import FleaMarketDiscovery
+    from infra.pool_fetcher import PoolFetcher
+    from infra.rate_limiter import TokenBucketRateLimiter
+    from infra.rpc_manager import RPCManager
+    from infra.source_fetcher import SourceFetcher
+    from monitoring.alerts import TelegramAlerts
+    from process_a_indexer import LLMSecurityAuditor, ProcessAIndexer
+    from process_b_sniper import ProcessBSniper
+
+    dry_run = os.getenv("DRY_RUN", "true").lower() == "true"
+    trade_size = float(os.getenv("TRADE_SIZE_USD", "200"))
+    min_spread = float(os.getenv("MIN_SPREAD_PCT", "2.0"))
+    scan_interval_a = float(os.getenv("SCAN_INTERVAL_A", "30"))
+    scan_interval_b = float(os.getenv("SCAN_INTERVAL_B", "1"))
+
+    alchemy_key = os.getenv("ALCHEMY_API_KEY", "")
+    primary_url = (
+        f"https://arb-mainnet.g.alchemy.com/v2/{alchemy_key}"
+        if alchemy_key
+        else ""
+    )
+    fallback_url = "https://arb1.arbitrum.io/rpc"
+
+    tg = TelegramAlerts(
+        os.getenv("TELEGRAM_BOT_TOKEN", ""),
+        os.getenv("TELEGRAM_CHAT_ID", ""),
+    )
+
+    rate_limiter = TokenBucketRateLimiter(rate=10, capacity=5)
+    rpc = RPCManager(
+        primary_url or fallback_url, fallback_url, "", rate_limiter
+    )
+    source_fetcher = SourceFetcher()
+    cleared_db = ClearedTokensDB()
+    pool_fetcher = PoolFetcher(rpc)
+
+    cache = ContractCache("/data/longtail.db")
+    await cache.init()
+    flea = FleaMarketDiscovery(rpc, cache)
+
+    llm_key = os.getenv("LLM_API_KEY", "")
+    llm_model = os.getenv("LLM_MODEL_PRIMARY", "llama-3.3-70b-versatile")
+    llm_auditor = LLMSecurityAuditor(llm_key, llm_model)
+
+    process_a = ProcessAIndexer(
+        rpc_manager=rpc,
+        source_fetcher=source_fetcher,
+        cleared_db=cleared_db,
+        llm_auditor=llm_auditor,
+        flea_discovery=flea,
+    )
+
+    process_b = ProcessBSniper(
+        cleared_db=cleared_db,
+        pool_fetcher=pool_fetcher,
+        rpc_manager=rpc,
+        trade_size_usd=trade_size,
+        gas_usd=0.02,
+        min_spread_pct=min_spread,
+        dry_run=dry_run,
+    )
+
+    mode = "LIVE" if not dry_run else "PAPER"
+    logger.info(
+        "Engine starting | mode=%s trade_size=$%.0f min_spread=%.1f%%",
+        mode, trade_size, min_spread,
+    )
+    await tg.notify_engine_start(mode, trade_size, min_spread)
+
+    async def loop_a() -> None:
+        while True:
+            try:
+                await process_a._scan_cycle()
+            except Exception as e:
+                logger.error("Indexer cycle failed: %s", e)
+                await tg.notify_error("Process A", str(e))
+            await asyncio.sleep(scan_interval_a)
+
+    async def loop_b() -> None:
+        while True:
+            try:
+                old_count = len(process_b.get_results())
+                await process_b._scan_cycle()
+                new_results = process_b.get_results()[old_count:]
+
+                for r in new_results:
+                    if r["status"] == "EXECUTED":
+                        await tg.notify_trade_executed(
+                            token_address=r["token_address"],
+                            buy_dex=r["buy_dex"],
+                            sell_dex=r["sell_dex"],
+                            spread_pct=r["spread_pct"],
+                            net_profit=r["net_profit_usd"],
+                            mode=mode,
+                        )
+                    else:
+                        await tg.notify_trade_aborted(
+                            token_address=r["token_address"],
+                            spread_pct=r["spread_pct"],
+                            reason=r["abort_reason"],
+                        )
+            except Exception as e:
+                logger.error("Sniper cycle failed: %s", e)
+                await tg.notify_error("Process B", str(e))
+            await asyncio.sleep(scan_interval_b)
+
+    await asyncio.gather(loop_a(), loop_b())
+
+
+def get_latest_terminal_logs() -> str:
+    """Reads the tail end of the trading log to display inside the Gradio UI."""
+    if not os.path.exists(LOG_FILE_PATH):
+        return "Engine initialized. Waiting for new block emissions to populate logs..."
+    try:
+        with open(LOG_FILE_PATH) as log_file:
+            lines = log_file.readlines()
+            return "".join(lines[-35:])
+    except Exception as e:
+        return f"Error reading execution logs: {e}"
+
+
+# Fire the background trading pipeline instantly on app startup
+threading.Thread(target=start_arbitrage_engine, daemon=True).start()
+
+with gr.Blocks(title="L2 Flea Market Arbitrage Terminal") as demo:
+    gr.Markdown("# L2 Flea Market Arbitrage System Monitor")
+    gr.Markdown(
+        "Monitoring low-liquidity exotic pairs on Arbitrum One "
+        "via decoupled async multi-agent state graph transitions."
+    )
+
+    with gr.Row():
+        engine_status = gr.Textbox(
+            label="Platform Infrastructure",
+            value="ACTIVE - Running on CPU Basic (16GB RAM)",
+            interactive=False,
+        )
+        storage_status = gr.Textbox(
+            label="Persistent Memory Bank",
+            value="MOUNTED - /data/cleared_tokens.db",
+            interactive=False,
+        )
+        execution_mode = gr.Textbox(
+            label="Execution Mode",
+            value=(
+                "PAPER TRADING (dry_run=true)"
+                if os.getenv("DRY_RUN", "true") == "true"
+                else "LIVE MODE"
+            ),
+            interactive=False,
+        )
+
+    log_viewer = gr.Textbox(
+        label="Live Engine Activity Log Feed (Auto-Refreshes Every 5s)",
+        value=get_latest_terminal_logs(),
+        lines=25,
+        max_lines=40,
+        interactive=False,
+    )
+
+    log_timer = gr.Timer(5)
+    log_timer.tick(fn=get_latest_terminal_logs, outputs=log_viewer)
+
+if __name__ == "__main__":
+    demo.launch(server_name="0.0.0.0", server_port=7860)
