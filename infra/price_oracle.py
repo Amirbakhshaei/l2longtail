@@ -1,201 +1,91 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import time
 
-from config.constants import DEX_ROUTERS, WETH_ADDRESS
-from infra.rpc_manager import RPCManager
+import httpx
 
 logger = logging.getLogger(__name__)
 
-GET_AMOUNTS_OUT_SELECTOR = "0xd06ca61f"
+WETH_USDC_POOL = "0xf64dfe17c8b87f012fcf50fbda1d62bfa148366a"
+GECKOTERMINAL_URL = (
+    "https://api.geckoterminal.com/api/v2/networks/arbitrum/tokens"
+    "/0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"
+)
 WETH_DECIMALS = 18
+USDC_DECIMALS = 6
+CACHE_TTL = 60.0
 
 
-def _encode_get_amounts_out(amount_in: int, path: list[str]) -> str:
-    selector = GET_AMOUNTS_OUT_SELECTOR
-    amount_hex = format(amount_in, "064x")
-    path_offset = "0000000000000000000000000000000000000000000000000000000000000040"
-    path_length = format(len(path), "064x")
-    path_encoded = ""
-    for addr in path:
-        path_encoded += addr.lower().replace("0x", "").zfill(64)
-    return f"{selector}{amount_hex}{path_offset}{path_length}{path_encoded}"
+class WETHPriceOracle:
+    """Multi-tiered WETH price oracle: GeckoTerminal REST → on-chain pool reserves."""
 
-
-@dataclass
-class RouterQuote:
-    router_name: str
-    router_address: str
-    amount_out: int
-    price_per_token: float
-
-
-@dataclass
-class ArbitrageOpportunity:
-    token_address: str
-    token_symbol: str
-    buy_router: str
-    buy_router_address: str
-    sell_router: str
-    sell_router_address: str
-    buy_price_usd: float
-    sell_price_usd: float
-    spread_pct: float
-    pool_address: str
-    pool_liquidity_usd: float
-
-
-class PriceOracle:
-    MIN_RESERVE_USD = 500.0
-
-    def __init__(self, rpc_manager: RPCManager) -> None:
+    def __init__(self, rpc_manager: object | None = None) -> None:
         self.rpc = rpc_manager
+        self._cached_price: float | None = None
+        self._cache_ttl: float = 0.0
 
-    async def get_amounts_out(
-        self,
-        router_address: str,
-        amount_in_wei: int,
-        path: list[str],
-    ) -> int | None:
-        try:
-            call_data = _encode_get_amounts_out(amount_in_wei, path)
-            raw = await self.rpc.call_contract(router_address, call_data)
+    async def get_weth_price(self) -> float:
+        now = time.time()
+        if self._cached_price is not None and now - self._cache_ttl < CACHE_TTL:
+            return self._cached_price
 
-            from web3 import Web3
+        price = await self._tier1_geckoterminal()
+        if price is not None and price > 0:
+            self._cached_price = price
+            self._cache_ttl = now
+            return price
 
-            w3 = Web3()
-            result = w3.codec.decode(["uint256[]"], bytes.fromhex(raw.replace("0x", "")))[0]
-            return int(result[-1])
-        except Exception as e:
-            logger.debug("getAmountsOut failed for %s: %s", router_address, e)
-            return None
+        price = await self._tier2_on_chain()
+        if price is not None and price > 0:
+            self._cached_price = price
+            self._cache_ttl = now
+            return price
 
-    async def _check_pair_liquidity(
-        self,
-        router_address: str,
-        token_address: str,
-        quote_token: str,
-    ) -> float:
-        from config.constants import (
-            CAMELOT_V2_FACTORY,
-            DEX_ROUTERS,
-            SUSHISWAP_FACTORY,
-            UNISWAP_V2_FACTORY,
+        raise ValueError(
+            "All WETH pricing oracle tiers exhausted. Engine is completely blind."
         )
 
-        router_to_factory = {}
-        for dex_name, factory_addr in [
-            ("uniswap_v2", UNISWAP_V2_FACTORY),
-            ("sushiswap", SUSHISWAP_FACTORY),
-            ("camelot_v2", CAMELOT_V2_FACTORY),
-        ]:
-            r = DEX_ROUTERS.get(dex_name, "")
-            if r:
-                router_to_factory[r.lower()] = factory_addr
-
-        factory = router_to_factory.get(router_address.lower())
-        if not factory:
-            return 0.0
-
+    async def _tier1_geckoterminal(self) -> float | None:
         try:
-            from infra.pair_finder import _encode_get_pair
-            call_data = _encode_get_pair(token_address, quote_token)
-            raw = await self.rpc.call_contract(factory, call_data)
-            pair_addr = "0x" + raw[-40:]
-            zero = "0x" + "0" * 40
-            if pair_addr.lower() == zero.lower():
-                return 0.0
+            async with httpx.AsyncClient(timeout=5.0) as client:
+                response = await client.get(GECKOTERMINAL_URL)
+                if response.status_code == 200:
+                    data = response.json()
+                    price_usd = float(data["data"]["attributes"]["price_usd"])
+                    if price_usd > 0:
+                        logger.info("WETH oracle Tier 1 (GeckoTerminal): $%.2f", price_usd)
+                        return price_usd
+        except Exception as e:
+            logger.warning("Tier 1 off-chain WETH oracle failed: %s", e)
+        return None
 
-            reserves_raw = await self.rpc.call_contract(pair_addr, "0x0902f1ac")
-            data = bytes.fromhex(reserves_raw.replace("0x", ""))
+    async def _tier2_on_chain(self) -> float | None:
+        if self.rpc is None:
+            return None
+        try:
+            raw = await self.rpc.call_contract(WETH_USDC_POOL, "0x0902f1ac")
+            data = bytes.fromhex(raw.replace("0x", ""))
             r0 = int.from_bytes(data[0:32], "big")
             r1 = int.from_bytes(data[32:64], "big")
 
-            token0_raw = await self.rpc.call_contract(pair_addr, "0x0dfe1681")
+            token0_raw = await self.rpc.call_contract(WETH_USDC_POOL, "0x0dfe1681")
             token0 = "0x" + token0_raw[-40:]
 
-            if quote_token.lower() == token0.lower():
-                quote_reserve = r0
+            weth_addr = "0x82af49447d8a07e3bd95bd0d56f35241523fab1"
+            if token0.lower() == weth_addr:
+                weth_reserve = r0
+                usdc_reserve = r1
             else:
-                quote_reserve = r1
+                weth_reserve = r1
+                usdc_reserve = r0
 
-            from config.constants import WETH_ADDRESS
-            if quote_token.lower() == WETH_ADDRESS.lower():
-                return (quote_reserve / 1e18) * 3800.0
-            else:
-                return (quote_reserve / 1e6) * 1.0
-        except Exception as e:
-            logger.debug("_check_pair_liquidity failed: %s", e)
-            return 0.0
-
-    async def get_cross_dex_prices(
-        self,
-        token_address: str,
-        quote_token: str = WETH_ADDRESS,
-        amount_in_wei: int = 10**18,
-    ) -> list[RouterQuote]:
-        quotes: list[RouterQuote] = []
-
-        for name, address in DEX_ROUTERS.items():
-            liq_usd = await self._check_pair_liquidity(
-                address, token_address, quote_token
-            )
-            if liq_usd < self.MIN_RESERVE_USD:
-                continue
-
-            amount_out = await self.get_amounts_out(
-                address, amount_in_wei, [quote_token, token_address]
-            )
-            if amount_out and amount_out > 0:
-                quotes.append(
-                    RouterQuote(
-                        router_name=name,
-                        router_address=address,
-                        amount_out=amount_out,
-                        price_per_token=float(amount_out),
-                    )
+            if weth_reserve > 0 and usdc_reserve > 0:
+                price = (usdc_reserve / 10**USDC_DECIMALS) / (
+                    weth_reserve / 10**WETH_DECIMALS
                 )
-
-        return quotes
-
-    async def find_best_spread(
-        self,
-        token_address: str,
-        token_symbol: str,
-        pool_address: str,
-        pool_liquidity_usd: float,
-        quote_token: str = WETH_ADDRESS,
-    ) -> ArbitrageOpportunity | None:
-        quotes = await self.get_cross_dex_prices(token_address, quote_token)
-
-        if len(quotes) < 2:
-            return None
-
-        best_buy = min(quotes, key=lambda q: q.price_per_token)
-        best_sell = max(quotes, key=lambda q: q.price_per_token)
-
-        if best_buy.router_name == best_sell.router_name:
-            return None
-
-        spread_pct = (
-            (best_sell.price_per_token - best_buy.price_per_token)
-            / best_buy.price_per_token
-        ) * 100
-
-        if spread_pct <= 0:
-            return None
-
-        return ArbitrageOpportunity(
-            token_address=token_address,
-            token_symbol=token_symbol,
-            buy_router=best_buy.router_name,
-            buy_router_address=best_buy.router_address,
-            sell_router=best_sell.router_name,
-            sell_router_address=best_sell.router_address,
-            buy_price_usd=best_buy.price_per_token,
-            sell_price_usd=best_sell.price_per_token,
-            spread_pct=spread_pct,
-            pool_address=pool_address,
-            pool_liquidity_usd=pool_liquidity_usd,
-        )
+                logger.info("WETH oracle Tier 2 (on-chain): $%.2f", price)
+                return price
+        except Exception as e:
+            logger.warning("Tier 2 on-chain WETH pool fallback failed: %s", e)
+        return None

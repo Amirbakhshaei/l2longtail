@@ -25,6 +25,7 @@ from infra.local_pricing import (
     find_local_spreads,
 )
 from infra.pool_fetcher import PoolFetcher
+from infra.price_oracle import WETHPriceOracle
 from infra.rpc_manager import RPCManager
 
 logger = logging.getLogger(__name__)
@@ -63,64 +64,30 @@ class TradeOpportunity:
 
 
 class PriceAnomalyScanner:
-    WETH_USDC_POOL = "0x969F4E88c0eC4FEB8A1F6eBd46ba1393C2D11A57"
-    USDC_DECIMALS = 6
-    WETH_DECIMALS = 18
-
     def __init__(
         self,
         cleared_db: ClearedTokensDB,
         pool_fetcher: PoolFetcher,
         rpc_manager: RPCManager,
+        weth_oracle: WETHPriceOracle | None = None,
     ) -> None:
         self.db = cleared_db
         self.pool_fetcher = pool_fetcher
         self.rpc = rpc_manager
+        self.oracle = weth_oracle or WETHPriceOracle(rpc_manager)
         self._reserves_cache: dict[str, tuple[int, int]] = {}
         self._cache_ttl: dict[str, float] = {}
         self.CACHE_DURATION = 5.0
         self._weth_price_usd: float | None = None
-        self._weth_price_ttl: float = 0.0
-        self.WETH_PRICE_CACHE = 60.0
 
     async def _get_weth_price(self) -> float | None:
-        now = time.time()
-        if (
-            self._weth_price_usd is not None
-            and now - self._weth_price_ttl < self.WETH_PRICE_CACHE
-        ):
-            return self._weth_price_usd
-
         try:
-            raw = await self.rpc.call_contract(self.WETH_USDC_POOL, "0x0902f1ac")
-            data = bytes.fromhex(raw.replace("0x", ""))
-            r0 = int.from_bytes(data[0:32], "big")
-            r1 = int.from_bytes(data[32:64], "big")
-
-            token0_raw = await self.rpc.call_contract(
-                self.WETH_USDC_POOL, "0x0dfe1681"
-            )
-            token0 = "0x" + token0_raw[-40:]
-
-            weth_addr = "0x82af49447d8a07e3bd95bd0d56f35241523fab1"
-            if token0.lower() == weth_addr:
-                weth_reserve = r0
-                usdc_reserve = r1
-            else:
-                weth_reserve = r1
-                usdc_reserve = r0
-
-            if weth_reserve > 0 and usdc_reserve > 0:
-                self._weth_price_usd = (usdc_reserve / 10**self.USDC_DECIMALS) / (
-                    weth_reserve / 10**self.WETH_DECIMALS
-                )
-                self._weth_price_ttl = now
-                logger.debug("WETH price updated: $%.2f", self._weth_price_usd)
-        except Exception as e:
-            logger.error("Failed to fetch WETH price: %s", e)
+            price = await self.oracle.get_weth_price()
+            self._weth_price_usd = price
+            return price
+        except ValueError:
             self._weth_price_usd = None
-
-        return self._weth_price_usd
+            return None
 
     async def scan(self, min_spread_pct: float = 2.0) -> list[TradeOpportunity]:
         cleared_tokens = self.db.get_cleared_tokens()
@@ -376,7 +343,10 @@ class ProcessBSniper:
         dry_run: bool = True,
         live_executor=None,
     ) -> None:
-        self.scanner = PriceAnomalyScanner(cleared_db, pool_fetcher, rpc_manager)
+        self.oracle = WETHPriceOracle(rpc_manager)
+        self.scanner = PriceAnomalyScanner(
+            cleared_db, pool_fetcher, rpc_manager, self.oracle
+        )
         self.quant = QuantAnalyst(trade_size_usd, gas_usd)
         self.gatekeeper = ExecutionGatekeeper(dry_run, live_executor)
         self.min_spread_pct = min_spread_pct

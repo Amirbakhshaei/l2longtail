@@ -18,6 +18,7 @@ from config.factories import (
     FactoryConfig,
 )
 from db.cache import ContractCache
+from infra.price_oracle import WETHPriceOracle
 from infra.rpc_manager import RPCManager
 
 logger = logging.getLogger(__name__)
@@ -64,48 +65,16 @@ class FleaMarketDiscovery:
         self._seen: deque[str] = deque(maxlen=10000)
         self._queue: asyncio.Queue[DiscoveredPair] = asyncio.Queue()
         self._running = False
-        self._weth_price_usd: float | None = None
-        self._weth_price_ttl: float = 0.0
+        self.oracle = WETHPriceOracle(rpc_manager)
 
     def _is_major_asset(self, addr: str) -> bool:
         return addr.lower() in MAJOR_ASSET_BLACKLIST
 
     async def _get_weth_price(self) -> float | None:
-        now = time.time()
-        if (
-            self._weth_price_usd is not None
-            and now - self._weth_price_ttl < 60.0
-        ):
-            return self._weth_price_usd
-
-        weth_usdc_pool = "0x969F4E88c0eC4FEB8A1F6eBd46ba1393C2D11A57"
         try:
-            raw = await self.rpc.call_contract(weth_usdc_pool, "0x0902f1ac")
-            data = bytes.fromhex(raw.replace("0x", ""))
-            r0 = int.from_bytes(data[0:32], "big")
-            r1 = int.from_bytes(data[32:64], "big")
-
-            token0_raw = await self.rpc.call_contract(weth_usdc_pool, "0x0dfe1681")
-            token0 = "0x" + token0_raw[-40:]
-
-            weth_addr = "0x82af49447d8a07e3bd95bd0d56f35241523fab1"
-            if token0.lower() == weth_addr:
-                weth_reserve = r0
-                usdc_reserve = r1
-            else:
-                weth_reserve = r1
-                usdc_reserve = r0
-
-            if weth_reserve > 0 and usdc_reserve > 0:
-                self._weth_price_usd = (usdc_reserve / 1e6) / (
-                    weth_reserve / 1e18
-                )
-                self._weth_price_ttl = now
-                return self._weth_price_usd
-        except Exception as e:
-            logger.debug("Failed to fetch WETH price: %s", e)
-
-        return self._weth_price_usd
+            return await self.oracle.get_weth_price()
+        except ValueError:
+            return None
 
     def _classify_pair(
         self, token0: str, token1: str

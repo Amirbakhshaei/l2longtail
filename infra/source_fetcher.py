@@ -13,10 +13,15 @@ ARBITRUM_CHAIN_ID = "42161"
 
 class SourceFetcher:
     def __init__(self, api_key: str | None = None) -> None:
-        self.api_key = api_key or os.getenv("ETHERSCAN_API_KEY", "")
+        self.api_key = (
+            api_key
+            or os.getenv("ETHERSCAN_API_KEY", "")
+            or os.getenv("ARBISCAN_API_KEY", "")
+        )
         if not self.api_key:
             logger.warning(
-                "ETHERSCAN_API_KEY not set — contract source fetches will fail"
+                "ETHERSCAN_API_KEY / ARBISCAN_API_KEY not set"
+                " — contract source fetches will fail"
             )
         self._client: httpx.AsyncClient | None = None
 
