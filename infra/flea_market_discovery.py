@@ -126,19 +126,22 @@ class FleaMarketDiscovery:
             r1 = int.from_bytes(data[32:64], "big")
 
             token0_raw = await self.rpc.call_contract(pair_address, "0x0dfe1681")
-            token0 = "0x" + token0_raw[-40:]
+            token1_raw = await self.rpc.call_contract(pair_address, "0xd21220a7")
 
-            if token0.lower() == WETH_ADDRESS:
-                weth_reserve = r0
-            elif token0.lower() == USDC_ADDRESS:
-                usdc_reserve = r0
-                return usdc_reserve / 1e6
-            else:
-                if token0.lower() in MAJOR_ASSET_BLACKLIST:
-                    return 0.0
-                weth_reserve = r1
+            token0 = "0x" + token0_raw[-40:].lower()
+            token1 = "0x" + token1_raw[-40:].lower()
 
-            return (weth_reserve / 1e18) * weth_price
+            if token0 == WETH_ADDRESS:
+                return (r0 / 1e18) * weth_price
+            elif token0 == USDC_ADDRESS:
+                return r0 / 1e6
+
+            if token1 == WETH_ADDRESS:
+                return (r1 / 1e18) * weth_price
+            elif token1 == USDC_ADDRESS:
+                return r1 / 1e6
+
+            return 0.0
         except Exception as e:
             logger.debug("_estimate_liquidity failed for %s: %s", pair_address, e)
             return 0.0
