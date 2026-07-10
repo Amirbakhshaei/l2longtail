@@ -231,13 +231,16 @@ class FleaMarketDiscovery:
 
         for factory_config in FACTORY_REGISTRY:
             try:
-                params = {
+                # Alchemy enforces strict hex encoding for block ranges.
+                # Construct the filter object with explicit hex casting.
+                filter_obj = {
                     "fromBlock": hex(int(from_block)),
                     "toBlock": hex(int(current_block)),
                     "address": factory_config.factory_address,
                     "topics": [factory_config.event_topic],
                 }
-                resp = await self.rpc.call("eth_getLogs", [params])
+
+                resp = await self.rpc.call("eth_getLogs", [filter_obj])
                 logs = resp.get("result", [])
 
                 for log in logs:
