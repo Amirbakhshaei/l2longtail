@@ -197,8 +197,8 @@ class WebSocketListener:
     ) -> None:
         try:
             params = {
-                "fromBlock": hex(from_block),
-                "toBlock": hex(to_block),
+                "fromBlock": hex(int(from_block)),
+                "toBlock": hex(int(to_block)),
                 "address": factory_config.factory_address,
                 "topics": [factory_config.event_topic],
             }

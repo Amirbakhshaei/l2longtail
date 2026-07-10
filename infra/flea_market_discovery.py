@@ -232,8 +232,8 @@ class FleaMarketDiscovery:
         for factory_config in FACTORY_REGISTRY:
             try:
                 params = {
-                    "fromBlock": hex(from_block),
-                    "toBlock": hex(current_block),
+                    "fromBlock": hex(int(from_block)),
+                    "toBlock": hex(int(current_block)),
                     "address": factory_config.factory_address,
                     "topics": [factory_config.event_topic],
                 }
