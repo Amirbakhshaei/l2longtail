@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from typing import Any
 
@@ -8,6 +9,9 @@ import httpx
 from infra.rate_limiter import TokenBucketRateLimiter
 
 logger = logging.getLogger(__name__)
+
+MAX_429_RETRIES = 3
+BASE_BACKOFF = 2.0
 
 
 class RPCManager:
@@ -35,7 +39,9 @@ class RPCManager:
         if self._client and not self._client.is_closed:
             await self._client.aclose()
 
-    async def _http_post(self, url: str, method: str, params: list[Any]) -> dict[str, Any]:
+    async def _http_post(
+        self, url: str, method: str, params: list[Any]
+    ) -> dict[str, Any]:
         client = await self._get_client()
         payload = {"jsonrpc": "2.0", "method": method, "params": params, "id": 1}
         response = await client.post(url, json=payload)
@@ -45,22 +51,68 @@ class RPCManager:
             raise RuntimeError(f"RPC error: {data['error']}")
         return data
 
-    async def call(self, method: str, params: list[Any] | None = None) -> dict[str, Any]:
+    async def call(
+        self, method: str, params: list[Any] | None = None
+    ) -> dict[str, Any]:
         if params is None:
             params = []
+
         await self.rate_limiter.acquire()
         url = self.fallback_url if self._failover_active else self.primary_url
+
         try:
             response = await self._http_post(url, method, params)
             self._consecutive_failures = 0
             return response
-        except (httpx.HTTPStatusError, httpx.ConnectError, httpx.TimeoutException):
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code == 429:
+                for attempt in range(MAX_429_RETRIES):
+                    backoff = BASE_BACKOFF * (2**attempt)
+                    retry_after = e.response.headers.get("Retry-After")
+                    if retry_after:
+                        try:
+                            backoff = max(backoff, float(retry_after))
+                        except ValueError:
+                            pass
+                    logger.warning(
+                        "Rate limited (429), retrying in %.1fs (attempt %d/%d)",
+                        backoff,
+                        attempt + 1,
+                        MAX_429_RETRIES,
+                    )
+                    await asyncio.sleep(backoff)
+                    await self.rate_limiter.acquire()
+                    try:
+                        return await self._http_post(url, method, params)
+                    except httpx.HTTPStatusError as retry_e:
+                        if retry_e.response.status_code == 429:
+                            continue
+                        raise
+                logger.error("Rate limit persists after %d retries", MAX_429_RETRIES)
+                raise
             self._consecutive_failures += 1
             if self._consecutive_failures >= 3:
                 self._failover_active = not self._failover_active
                 self._consecutive_failures = 0
-                logger.warning("RPC failover toggled, active=%s", self._failover_active)
-            retry_url = self.fallback_url if not self._failover_active else self.primary_url
+                logger.warning(
+                    "RPC failover toggled, active=%s", self._failover_active
+                )
+            retry_url = (
+                self.fallback_url if not self._failover_active else self.primary_url
+            )
+            await self.rate_limiter.acquire()
+            return await self._http_post(retry_url, method, params)
+        except (httpx.ConnectError, httpx.TimeoutException):
+            self._consecutive_failures += 1
+            if self._consecutive_failures >= 3:
+                self._failover_active = not self._failover_active
+                self._consecutive_failures = 0
+                logger.warning(
+                    "RPC failover toggled, active=%s", self._failover_active
+                )
+            retry_url = (
+                self.fallback_url if not self._failover_active else self.primary_url
+            )
             await self.rate_limiter.acquire()
             return await self._http_post(retry_url, method, params)
 

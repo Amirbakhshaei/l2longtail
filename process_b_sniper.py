@@ -16,8 +16,10 @@ import time
 from dataclasses import dataclass
 from typing import Literal, TypedDict
 
+from config.constants import WETH_ADDRESS
 from db.cleared_tokens import ClearedTokensDB
 from infra.local_pricing import (
+    PoolInfo,
     compute_net_profit,
     compute_v2_output,
     find_local_spreads,
@@ -55,6 +57,8 @@ class TradeOpportunity:
     spread_pct: float
     buy_reserves: tuple[int, int]
     sell_reserves: tuple[int, int]
+    buy_weth_is_r0: bool
+    sell_weth_is_r0: bool
     liquidity_usd: float
 
 
@@ -75,13 +79,16 @@ class PriceAnomalyScanner:
         self._reserves_cache: dict[str, tuple[int, int]] = {}
         self._cache_ttl: dict[str, float] = {}
         self.CACHE_DURATION = 5.0
-        self._weth_price_usd: float = 3800.0
+        self._weth_price_usd: float | None = None
         self._weth_price_ttl: float = 0.0
         self.WETH_PRICE_CACHE = 60.0
 
-    async def _get_weth_price(self) -> float:
+    async def _get_weth_price(self) -> float | None:
         now = time.time()
-        if now - self._weth_price_ttl < self.WETH_PRICE_CACHE:
+        if (
+            self._weth_price_usd is not None
+            and now - self._weth_price_ttl < self.WETH_PRICE_CACHE
+        ):
             return self._weth_price_usd
 
         try:
@@ -90,7 +97,9 @@ class PriceAnomalyScanner:
             r0 = int.from_bytes(data[0:32], "big")
             r1 = int.from_bytes(data[32:64], "big")
 
-            token0_raw = await self.rpc.call_contract(self.WETH_USDC_POOL, "0x0dfe1681")
+            token0_raw = await self.rpc.call_contract(
+                self.WETH_USDC_POOL, "0x0dfe1681"
+            )
             token0 = "0x" + token0_raw[-40:]
 
             weth_addr = "0x82af49447d8a07e3bd95bd0d56f35241523fab1"
@@ -108,10 +117,8 @@ class PriceAnomalyScanner:
                 self._weth_price_ttl = now
                 logger.debug("WETH price updated: $%.2f", self._weth_price_usd)
         except Exception as e:
-            logger.debug(
-                "Failed to fetch WETH price, using cached $%.2f: %s",
-                self._weth_price_usd, e,
-            )
+            logger.error("Failed to fetch WETH price: %s", e)
+            self._weth_price_usd = None
 
         return self._weth_price_usd
 
@@ -121,24 +128,47 @@ class PriceAnomalyScanner:
             return []
 
         weth_price = await self._get_weth_price()
+        if weth_price is None:
+            logger.error("WETH oracle unavailable — aborting scan cycle")
+            return []
+
         token_addresses = list(set(t.token_address for t in cleared_tokens))
-        opportunities = []
+        opportunities: list[TradeOpportunity] = []
 
         for token_addr in token_addresses:
             token_pairs = [t for t in cleared_tokens if t.token_address == token_addr]
             if len(token_pairs) < 2:
                 continue
 
-            pools: dict[str, tuple[int, int]] = {}
+            pools: dict[str, PoolInfo] = {}
             for pair in token_pairs:
                 reserves = await self._get_reserves(pair.pair_address)
-                if reserves and reserves[0] > 0 and reserves[1] > 0:
-                    pools[pair.dex_name] = reserves
-                else:
-                    logger.debug("No reserves for %s on %s", pair.symbol, pair.dex_name)
+                if not reserves or reserves[0] == 0 or reserves[1] == 0:
+                    logger.debug(
+                        "No reserves for %s on %s", pair.symbol, pair.dex_name
+                    )
+                    continue
+
+                token0_raw = await self.rpc.call_contract(
+                    pair.pair_address, "0x0dfe1681"
+                )
+                if not token0_raw or token0_raw == "0x":
+                    logger.warning(
+                        "Failed to fetch token0 for %s", pair.pair_address[:10]
+                    )
+                    continue
+
+                token0 = "0x" + token0_raw[-40:]
+                weth_is_r0 = token0.lower() == WETH_ADDRESS
+
+                pools[pair.dex_name] = PoolInfo(
+                    weth_is_r0=weth_is_r0, reserves=reserves
+                )
 
             if len(pools) < 2:
-                logger.debug("Not enough pools for %s: %d", token_addr[:10], len(pools))
+                logger.debug(
+                    "Not enough pools for %s: %d", token_addr[:10], len(pools)
+                )
                 continue
 
             token_symbol = token_pairs[0].symbol or token_addr[:10]
@@ -153,6 +183,8 @@ class PriceAnomalyScanner:
 
             for opp in local_opps:
                 liquidity = self._estimate_liquidity_usd(pools, weth_price)
+                buy_pool = pools[opp.buy_dex]
+                sell_pool = pools[opp.sell_dex]
                 opportunities.append(
                     TradeOpportunity(
                         token_address=opp.token_address,
@@ -164,6 +196,8 @@ class PriceAnomalyScanner:
                         spread_pct=opp.spread_pct,
                         buy_reserves=opp.buy_reserves,
                         sell_reserves=opp.sell_reserves,
+                        buy_weth_is_r0=buy_pool.weth_is_r0,
+                        sell_weth_is_r0=sell_pool.weth_is_r0,
                         liquidity_usd=liquidity,
                     )
                 )
@@ -190,11 +224,11 @@ class PriceAnomalyScanner:
             return None
 
     def _estimate_liquidity_usd(
-        self, pools: dict[str, tuple[int, int]], weth_price: float
+        self, pools: dict[str, PoolInfo], weth_price: float
     ) -> float:
         total = 0.0
-        for reserves in pools.values():
-            weth_reserve = reserves[1] / 1e18
+        for pool in pools.values():
+            weth_reserve = pool.weth_reserve / 1e18
             total += weth_reserve * weth_price
         return total / len(pools) if pools else 0.0
 
@@ -203,25 +237,30 @@ class QuantAnalyst:
     def __init__(self, trade_size_usd: float = 200.0, gas_usd: float = 0.02) -> None:
         self.trade_size_usd = trade_size_usd
         self.gas_usd = gas_usd
-        self.weth_price_usd: float = 3800.0
 
-    def evaluate(self, opportunity: TradeOpportunity) -> ExecutionState | None:
-        weth_price = self.weth_price_usd
-
+    def evaluate(
+        self, opportunity: TradeOpportunity, weth_price: float
+    ) -> ExecutionState | None:
         buy_amount_in = int((self.trade_size_usd / weth_price) * 1e18)
 
+        buy_weth = opportunity.buy_reserves[0] if opportunity.buy_weth_is_r0 else opportunity.buy_reserves[1]
+        buy_exotic = opportunity.buy_reserves[1] if opportunity.buy_weth_is_r0 else opportunity.buy_reserves[0]
+
         amount_out = compute_v2_output(
-            reserve_in=opportunity.buy_reserves[1],
-            reserve_out=opportunity.buy_reserves[0],
+            reserve_in=buy_weth,
+            reserve_out=buy_exotic,
             amount_in=buy_amount_in,
         )
 
         if amount_out == 0:
             return None
 
+        sell_exotic = opportunity.sell_reserves[1] if opportunity.sell_weth_is_r0 else opportunity.sell_reserves[0]
+        sell_weth = opportunity.sell_reserves[0] if opportunity.sell_weth_is_r0 else opportunity.sell_reserves[1]
+
         sell_amount_out = compute_v2_output(
-            reserve_in=opportunity.sell_reserves[0],
-            reserve_out=opportunity.sell_reserves[1],
+            reserve_in=sell_exotic,
+            reserve_out=sell_weth,
             amount_in=amount_out,
         )
 
@@ -259,9 +298,8 @@ class ExecutionGatekeeper:
     def __init__(self, dry_run: bool = True, live_executor=None) -> None:
         self.dry_run = dry_run
         self.live_executor = live_executor
-        self.weth_price_usd: float = 3800.0
 
-    async def execute(self, state: ExecutionState) -> ExecutionState:
+    async def execute(self, state: ExecutionState, weth_price: float) -> ExecutionState:
         if state["status"] == "ABORTED":
             return state
 
@@ -284,7 +322,6 @@ class ExecutionGatekeeper:
             from config.constants import DEX_ROUTERS, WETH_ADDRESS
             from infra.live_executor import SwapParams
 
-            weth_price = self.weth_price_usd
             amount_in_eth = state["trade_size_usd"] / weth_price
 
             params = SwapParams(
@@ -360,15 +397,16 @@ class ProcessBSniper:
 
     async def _scan_cycle(self) -> None:
         opportunities = await self.scanner.scan(self.min_spread_pct)
-        self.quant.weth_price_usd = self.scanner._weth_price_usd
-        self.gatekeeper.weth_price_usd = self.scanner._weth_price_usd
+        weth_price = self.scanner._weth_price_usd
+        if weth_price is None:
+            return
 
         for opp in opportunities:
-            state = self.quant.evaluate(opp)
+            state = self.quant.evaluate(opp, weth_price)
             if not state:
                 continue
 
-            result = await self.gatekeeper.execute(state)
+            result = await self.gatekeeper.execute(state, weth_price)
             self._results.append(result)
 
             if result["status"] == "EXECUTED":

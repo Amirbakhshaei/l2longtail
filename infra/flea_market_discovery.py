@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+from collections import deque
 from dataclasses import dataclass
 
 from web3 import Web3
@@ -60,12 +61,51 @@ class FleaMarketDiscovery:
         self.rpc = rpc_manager
         self.cache = cache
         self.wss_url = wss_url
-        self._seen: set[str] = set()
+        self._seen: deque[str] = deque(maxlen=10000)
         self._queue: asyncio.Queue[DiscoveredPair] = asyncio.Queue()
         self._running = False
+        self._weth_price_usd: float | None = None
+        self._weth_price_ttl: float = 0.0
 
     def _is_major_asset(self, addr: str) -> bool:
         return addr.lower() in MAJOR_ASSET_BLACKLIST
+
+    async def _get_weth_price(self) -> float | None:
+        now = time.time()
+        if (
+            self._weth_price_usd is not None
+            and now - self._weth_price_ttl < 60.0
+        ):
+            return self._weth_price_usd
+
+        weth_usdc_pool = "0x969F4E88c0eC4FEB8A1F6eBd46ba1393C2D11A57"
+        try:
+            raw = await self.rpc.call_contract(weth_usdc_pool, "0x0902f1ac")
+            data = bytes.fromhex(raw.replace("0x", ""))
+            r0 = int.from_bytes(data[0:32], "big")
+            r1 = int.from_bytes(data[32:64], "big")
+
+            token0_raw = await self.rpc.call_contract(weth_usdc_pool, "0x0dfe1681")
+            token0 = "0x" + token0_raw[-40:]
+
+            weth_addr = "0x82af49447d8a07e3bd95bd0d56f35241523fab1"
+            if token0.lower() == weth_addr:
+                weth_reserve = r0
+                usdc_reserve = r1
+            else:
+                weth_reserve = r1
+                usdc_reserve = r0
+
+            if weth_reserve > 0 and usdc_reserve > 0:
+                self._weth_price_usd = (usdc_reserve / 1e6) / (
+                    weth_reserve / 1e18
+                )
+                self._weth_price_ttl = now
+                return self._weth_price_usd
+        except Exception as e:
+            logger.debug("Failed to fetch WETH price: %s", e)
+
+        return self._weth_price_usd
 
     def _classify_pair(
         self, token0: str, token1: str
@@ -107,7 +147,9 @@ class FleaMarketDiscovery:
         except Exception:
             return time.time()
 
-    async def _estimate_liquidity(self, pair_address: str) -> float:
+    async def _estimate_liquidity(
+        self, pair_address: str, weth_price: float
+    ) -> float:
         try:
             reserves_raw = await self.rpc.call_contract(pair_address, "0x0902f1ac")
             data = bytes.fromhex(reserves_raw.replace("0x", ""))
@@ -127,19 +169,19 @@ class FleaMarketDiscovery:
                     return 0.0
                 weth_reserve = r1
 
-            return (weth_reserve / 1e18) * 3800.0
+            return (weth_reserve / 1e18) * weth_price
         except Exception as e:
-            logger.debug("estimate_liquidity failed for %s: %s", pair_address, e)
+            logger.debug("_estimate_liquidity failed for %s: %s", pair_address, e)
             return 0.0
 
     async def _passes_all_gates(
-        self, pair: DiscoveredPair
+        self, pair: DiscoveredPair, weth_price: float
     ) -> FleaMarketTarget | None:
         cache_key = pair.token_address.lower()
         if await self.cache.is_known_bad_token(cache_key):
             return None
 
-        liquidity = await self._estimate_liquidity(pair.pool_address)
+        liquidity = await self._estimate_liquidity(pair.pool_address, weth_price)
         if liquidity < MIN_LIQUIDITY_USD:
             await self.cache.mark_bad_token(cache_key, "below_min_liquidity")
             return None
@@ -211,6 +253,11 @@ class FleaMarketDiscovery:
         current_block = await self.rpc.get_block_number()
         from_block = max(current_block - lookback_blocks, 0)
 
+        weth_price = await self._get_weth_price()
+        if weth_price is None:
+            logger.warning("WETH oracle unavailable, skipping flea market scan")
+            return []
+
         targets: list[FleaMarketTarget] = []
 
         for factory_config in FACTORY_REGISTRY:
@@ -229,7 +276,7 @@ class FleaMarketDiscovery:
                     if not pair:
                         continue
 
-                    target = await self._passes_all_gates(pair)
+                    target = await self._passes_all_gates(pair, weth_price)
                     if target:
                         targets.append(target)
                         logger.info(

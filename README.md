@@ -11,3 +11,5 @@ pinned: false
 ---
 
 Check out the configuration reference at https://huggingface.co/docs/hub/spaces-config-reference
+# Long-Tail Arbitrage System
+Asynchronous multi-agent pipeline tracking and extracting micro-cap cross-DEX inefficiencies.

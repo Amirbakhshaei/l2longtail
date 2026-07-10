@@ -1,5 +1,0 @@
-[
-  {"token_address": "0x0000000000000000000000000000000000000001", "reason": "test honeypot"},
-  {"token_address": "0x0000000000000000000000000000000000000002", "reason": "known rug pull"},
-  {"token_address": "0x0000000000000000000000000000000000000003", "reason": "hidden 99% tax"}
-]

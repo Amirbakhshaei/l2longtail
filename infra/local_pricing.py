@@ -133,6 +133,22 @@ def price_to_sqrt_price_x96(price: float) -> int:
 
 
 @dataclass
+class PoolInfo:
+    """Reserve data with explicit WETH token position mapping."""
+
+    weth_is_r0: bool
+    reserves: tuple[int, int]
+
+    @property
+    def weth_reserve(self) -> int:
+        return self.reserves[0] if self.weth_is_r0 else self.reserves[1]
+
+    @property
+    def exotic_reserve(self) -> int:
+        return self.reserves[1] if self.weth_is_r0 else self.reserves[0]
+
+
+@dataclass
 class LocalArbitrageOpportunity:
     token_address: str
     token_symbol: str
@@ -150,11 +166,12 @@ class LocalArbitrageOpportunity:
 def find_local_spreads(
     token_address: str,
     token_symbol: str,
-    pools: dict[str, tuple[int, int]],
+    pools: dict[str, PoolInfo],
     min_spread_pct: float = 1.0,
 ) -> list[LocalArbitrageOpportunity]:
+    """Detect cross-DEX arbitrage spreads using dynamic WETH token position mapping."""
     dex_names = list(pools.keys())
-    opportunities = []
+    opportunities: list[LocalArbitrageOpportunity] = []
 
     for i in range(len(dex_names)):
         for j in range(len(dex_names)):
@@ -164,14 +181,14 @@ def find_local_spreads(
             buy_dex = dex_names[i]
             sell_dex = dex_names[j]
 
-            buy_reserves = pools[buy_dex]
-            sell_reserves = pools[sell_dex]
+            buy_pool = pools[buy_dex]
+            sell_pool = pools[sell_dex]
 
             amount_in = 10**18
 
             buy_amount_out = compute_v2_output(
-                reserve_in=buy_reserves[1],
-                reserve_out=buy_reserves[0],
+                reserve_in=buy_pool.weth_reserve,
+                reserve_out=buy_pool.exotic_reserve,
                 amount_in=amount_in,
             )
 
@@ -179,8 +196,8 @@ def find_local_spreads(
                 continue
 
             sell_amount_out = compute_v2_output(
-                reserve_in=sell_reserves[0],
-                reserve_out=sell_reserves[1],
+                reserve_in=sell_pool.exotic_reserve,
+                reserve_out=sell_pool.weth_reserve,
                 amount_in=buy_amount_out,
             )
 
@@ -189,8 +206,16 @@ def find_local_spreads(
 
             spread_pct = ((sell_amount_out - amount_in) / amount_in) * 100
 
-            buy_price = buy_reserves[1] / buy_reserves[0] if buy_reserves[0] > 0 else 0
-            sell_price = sell_reserves[1] / sell_reserves[0] if sell_reserves[0] > 0 else 0
+            buy_price = (
+                buy_pool.weth_reserve / buy_pool.exotic_reserve
+                if buy_pool.exotic_reserve > 0
+                else 0
+            )
+            sell_price = (
+                sell_pool.weth_reserve / sell_pool.exotic_reserve
+                if sell_pool.exotic_reserve > 0
+                else 0
+            )
 
             if spread_pct >= min_spread_pct:
                 opportunities.append(
@@ -204,8 +229,8 @@ def find_local_spreads(
                         buy_price=buy_price,
                         sell_price=sell_price,
                         spread_pct=spread_pct,
-                        buy_reserves=buy_reserves,
-                        sell_reserves=sell_reserves,
+                        buy_reserves=buy_pool.reserves,
+                        sell_reserves=sell_pool.reserves,
                     )
                 )
 

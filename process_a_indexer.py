@@ -14,9 +14,9 @@ import asyncio
 import json
 import logging
 import time
-from dataclasses import dataclass
 
 from agents.minifier import minify_solidity
+from agents.state import AuditResult
 from config.factories import (
     MAJOR_ASSET_BLACKLIST,
     MAX_LIQUIDITY_USD,
@@ -28,12 +28,6 @@ from infra.rpc_manager import RPCManager
 from infra.source_fetcher import SourceFetcher
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class AuditResult:
-    is_safe: bool
-    threats: list[str]
 
 
 class LLMSecurityAuditor:
