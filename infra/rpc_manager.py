@@ -98,7 +98,7 @@ class RPCManager:
                     "RPC failover toggled, active=%s", self._failover_active
                 )
             retry_url = (
-                self.fallback_url if not self._failover_active else self.primary_url
+                self.fallback_url if self._failover_active else self.primary_url
             )
             await self.rate_limiter.acquire()
             return await self._http_post(retry_url, method, params)
@@ -111,7 +111,7 @@ class RPCManager:
                     "RPC failover toggled, active=%s", self._failover_active
                 )
             retry_url = (
-                self.fallback_url if not self._failover_active else self.primary_url
+                self.fallback_url if self._failover_active else self.primary_url
             )
             await self.rate_limiter.acquire()
             return await self._http_post(retry_url, method, params)

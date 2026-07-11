@@ -22,6 +22,7 @@ UNI_ADDRESS = "0xfa9fa403952bf6964d4469a7ebbe16ac158aed17"
 
 PAIR_CREATED_V2_TOPIC = "0x0d3648bd0f6ba80134a33ba9275ac585d9d315f0ad8355cddefde31afa28d0e9"
 POOL_CREATED_V3_TOPIC = "0x783cca1c0412dd0d695e71b59427b0c48381a901f1565039e6f064699ea65b80"
+POOL_INITIALIZED_ALGEBRA_TOPIC = "0x8687275e5687df3a19c85b37324f47e464cfa9e5d7f8c4b172cb904e8e3cb6e0"
 
 MIN_LIQUIDITY_USD = 2500.0
 MAX_LIQUIDITY_USD = 100000.0
@@ -46,6 +47,13 @@ class FactoryConfig:
 
 FACTORY_REGISTRY: list[FactoryConfig] = [
     FactoryConfig(
+        name="Camelot V3",
+        factory_address="0x1a3c9B1d2F0529D97f2afC5136Cc23e58f1FD35B",
+        event_topic=POOL_INITIALIZED_ALGEBRA_TOPIC,
+        dex_venue="Camelot_V3",
+        version="v3",
+    ),
+    FactoryConfig(
         name="Camelot V2",
         factory_address="0x6EcCab422D763aC031210895C81787E87B43A652",
         event_topic=PAIR_CREATED_V2_TOPIC,
@@ -61,7 +69,7 @@ FACTORY_REGISTRY: list[FactoryConfig] = [
     ),
     FactoryConfig(
         name="Uniswap V2",
-        factory_address="0xf1d7cc64fb4452f05c498126312ebe29f30fbcf9",
+        factory_address="0xf9d42c087e47483941F58a9bf2a7E0b4849C5088",
         event_topic=PAIR_CREATED_V2_TOPIC,
         dex_venue="Uniswap_V2",
         version="v2",

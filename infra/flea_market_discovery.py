@@ -219,8 +219,51 @@ class FleaMarketDiscovery:
             logger.debug("parse_v2_pair_created failed: %s", e)
             return None
 
+    def _parse_v3_pool_initialized(
+        self, log: dict, factory_config: FactoryConfig
+    ) -> DiscoveredPair | None:
+        try:
+            topics = log.get("topics", [])
+            if len(topics) < 3:
+                return None
+
+            token0 = "0x" + topics[1][-40:]
+            token1 = "0x" + topics[2][-40:]
+
+            classified = self._classify_pair(token0, token1)
+            if not classified:
+                return None
+
+            exotic_token, quote_token = classified
+
+            data = log.get("data", "0x").replace("0x", "")
+            if len(data) >= 192:
+                pool_address = "0x" + data[152:192]
+            else:
+                return None
+
+            block_number = int(log.get("blockNumber", "0x0"), 16)
+
+            pair_key = f"{exotic_token.lower()}:{pool_address.lower()}"
+            if pair_key in self._seen:
+                return None
+            self._seen.add(pair_key)
+
+            return DiscoveredPair(
+                token_address=exotic_token,
+                quote_address=quote_token,
+                pool_address=pool_address,
+                dex_venue=factory_config.dex_venue,
+                factory_address=factory_config.factory_address,
+                block_number=block_number,
+                timestamp=time.time(),
+            )
+        except Exception as e:
+            logger.debug("parse_v3_pool_initialized failed: %s", e)
+            return None
+
     async def scan_recent_pairs(
-        self, lookback_blocks: int = 1000
+        self, lookback_blocks: int = 150
     ) -> list[FleaMarketTarget]:
         current_block = await self.rpc.get_block_number()
         from_block = max(current_block - lookback_blocks, 0)
@@ -231,36 +274,58 @@ class FleaMarketDiscovery:
             return []
 
         targets: list[FleaMarketTarget] = []
+        chunk_size = 10  # Alchemy free tier limit
 
         for factory_config in FACTORY_REGISTRY:
             try:
-                # Alchemy enforces strict hex encoding for block ranges.
-                # Construct the filter object with explicit hex casting.
-                filter_obj = {
-                    "fromBlock": hex(int(from_block)),
-                    "toBlock": hex(int(current_block)),
-                    "address": factory_config.factory_address,
-                    "topics": [factory_config.event_topic],
-                }
+                chunk_from = from_block
+                while chunk_from < current_block:
+                    chunk_to = min(chunk_from + chunk_size - 1, current_block)
+                    filter_obj = {
+                        "fromBlock": hex(int(chunk_from)),
+                        "toBlock": hex(int(chunk_to)),
+                        "address": [factory_config.factory_address],
+                        "topics": [factory_config.event_topic],
+                    }
 
-                resp = await self.rpc.call("eth_getLogs", [filter_obj])
-                logs = resp.get("result", [])
+                    resp = await self.rpc.call("eth_getLogs", [filter_obj])
 
-                for log in logs:
-                    pair = self._parse_v2_pair_created(log, factory_config)
-                    if not pair:
-                        continue
-
-                    target = await self._passes_all_gates(pair, weth_price)
-                    if target:
-                        targets.append(target)
-                        logger.info(
-                            "FLEA: %s on %s liq=$%.0f age=%.1fh",
-                            target.token_address[:10],
-                            target.dex_venue_name,
-                            target.initial_liquidity_usd,
-                            target.token_age_hours,
+                    if "error" in resp:
+                        logger.error(
+                            "RPC error on %s block %d-%d: %s",
+                            factory_config.name,
+                            chunk_from,
+                            chunk_to,
+                            resp["error"],
                         )
+                        break
+
+                    logs = resp.get("result", [])
+
+                    for log in logs:
+                        if factory_config.version == "v3":
+                            pair = self._parse_v3_pool_initialized(
+                                log, factory_config
+                            )
+                        else:
+                            pair = self._parse_v2_pair_created(
+                                log, factory_config
+                            )
+                        if not pair:
+                            continue
+
+                        target = await self._passes_all_gates(pair, weth_price)
+                        if target:
+                            targets.append(target)
+                            logger.info(
+                                "FLEA: %s on %s liq=$%.0f age=%.1fh",
+                                target.token_address[:10],
+                                target.dex_venue_name,
+                                target.initial_liquidity_usd,
+                                target.token_age_hours,
+                            )
+
+                    chunk_from = chunk_to + 1
 
             except Exception as e:
                 logger.warning(

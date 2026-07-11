@@ -196,14 +196,20 @@ class WebSocketListener:
         to_block: int,
     ) -> None:
         try:
-            # Alchemy enforces strict hex encoding for block ranges.
             filter_obj = {
                 "fromBlock": hex(int(from_block)),
                 "toBlock": hex(int(to_block)),
-                "address": factory_config.factory_address,
+                "address": [factory_config.factory_address],
                 "topics": [factory_config.event_topic],
             }
             resp = await self.rpc.call("eth_getLogs", [filter_obj])
+
+            if "error" in resp:
+                logger.error(
+                    "RPC error on %s: %s", factory_config.name, resp["error"]
+                )
+                return
+
             logs = resp.get("result", [])
 
             for log in logs:
