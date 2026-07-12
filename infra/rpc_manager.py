@@ -45,6 +45,12 @@ class RPCManager:
         client = await self._get_client()
         payload = {"jsonrpc": "2.0", "method": method, "params": params, "id": 1}
         response = await client.post(url, json=payload)
+        
+        # --- DIAGNOSTIC INTERCEPT ---
+        if response.status_code >= 400:
+            logger.error("HTTP %d on %s: %s", response.status_code, method, response.text)
+        # ----------------------------
+
         response.raise_for_status()
         data: dict[str, Any] = response.json()
         if "error" in data:
