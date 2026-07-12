@@ -274,46 +274,55 @@ class FleaMarketDiscovery:
             return []
 
         targets: list[FleaMarketTarget] = []
+        chunk_size = 10  # Enforced by Alchemy Arbitrum Free Tier
 
         for factory_config in FACTORY_REGISTRY:
             try:
-                # One elegant query per factory. No 10-block chunking spam.
-                filter_obj = {
-                    "fromBlock": hex(int(from_block)),
-                    "toBlock": hex(int(current_block)),
-                    "address": [factory_config.factory_address],
-                    "topics": [factory_config.event_topic],
-                }
+                chunk_from = from_block
+                while chunk_from <= current_block:
+                    chunk_to = min(chunk_from + chunk_size - 1, current_block)
+                    filter_obj = {
+                        "fromBlock": hex(int(chunk_from)),
+                        "toBlock": hex(int(chunk_to)),
+                        "address": [factory_config.factory_address],
+                        "topics": [factory_config.event_topic],
+                    }
 
-                resp = await self.rpc.call("eth_getLogs", [filter_obj])
+                    resp = await self.rpc.call("eth_getLogs", [filter_obj])
 
-                if "error" in resp:
-                    logger.error(
-                        "RPC Error on %s: %s", factory_config.name, resp["error"]
-                    )
-                    continue
-
-                logs = resp.get("result", [])
-
-                for log in logs:
-                    if factory_config.version == "v3":
-                        pair = self._parse_v3_pool_initialized(log, factory_config)
-                    else:
-                        pair = self._parse_v2_pair_created(log, factory_config)
-                        
-                    if not pair:
-                        continue
-
-                    target = await self._passes_all_gates(pair, weth_price)
-                    if target:
-                        targets.append(target)
-                        logger.info(
-                            "FLEA: %s on %s liq=$%.0f age=%.1fh",
-                            target.token_address[:10],
-                            target.dex_venue_name,
-                            target.initial_liquidity_usd,
-                            target.token_age_hours,
+                    if "error" in resp:
+                        logger.error(
+                            "RPC Error on %s block %d-%d: %s",
+                            factory_config.name,
+                            chunk_from,
+                            chunk_to,
+                            resp["error"],
                         )
+                        break  # Halt chunking for this factory if rate-limited
+
+                    logs = resp.get("result", [])
+
+                    for log in logs:
+                        if factory_config.version == "v3":
+                            pair = self._parse_v3_pool_initialized(log, factory_config)
+                        else:
+                            pair = self._parse_v2_pair_created(log, factory_config)
+                            
+                        if not pair:
+                            continue
+
+                        target = await self._passes_all_gates(pair, weth_price)
+                        if target:
+                            targets.append(target)
+                            logger.info(
+                                "FLEA: %s on %s liq=$%.0f age=%.1fh",
+                                target.token_address[:10],
+                                target.dex_venue_name,
+                                target.initial_liquidity_usd,
+                                target.token_age_hours,
+                            )
+                    
+                    chunk_from = chunk_to + 1
 
             except Exception as e:
                 logger.warning(
