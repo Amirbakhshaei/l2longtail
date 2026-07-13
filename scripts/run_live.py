@@ -61,7 +61,7 @@ async def main() -> None:
 
     mode = "LIVE" if not settings.dry_run else "PAPER"
     logger.info("Starting Long-Tail Arbitrage Engine (%s MODE)", mode)
-    logger.info("  RPC Primary:  %s", settings.alchemy_rpc_url[:40] + "...")
+    logger.info("  RPC Primary:  %s", settings.ankr_rpc_url[:40] + "...")
     logger.info("  RPC Fallback: %s", settings.fallback_rpc_url)
     logger.info("  LLM Model:    %s", settings.llm_model_primary)
     logger.info("  Trade Size:   $%.0f", settings.max_trade_size_usd)
@@ -76,7 +76,7 @@ async def main() -> None:
         capacity=settings.rpc_rate_limit_per_sec * 2,
     )
     rpc_manager = RPCManager(
-        primary_url=settings.alchemy_rpc_url or settings.fallback_rpc_url,
+        primary_url=settings.ankr_rpc_url or settings.fallback_rpc_url,
         fallback_url=settings.fallback_rpc_url,
         flashbots_url=settings.flashbots_rpc_url,
         rate_limiter=rate_limiter,

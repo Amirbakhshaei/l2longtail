@@ -5,8 +5,8 @@ from pydantic_settings import BaseSettings
 class Settings(BaseSettings):
     dry_run: bool = Field(default=True, description="True = simulate, False = sign and broadcast")
 
-    alchemy_api_key: str = ""
-    alchemy_rpc_url: str = ""
+    ankr_api_key: str = ""
+    ankr_rpc_url: str = ""
     fallback_rpc_url: str = "https://arb1.arbitrum.io/rpc"
     flashbots_rpc_url: str = "https://rpc.flashbots.net/fast"
 
@@ -45,5 +45,9 @@ class Settings(BaseSettings):
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
     def model_post_init(self, __context: object) -> None:
-        if not self.alchemy_rpc_url and self.alchemy_api_key:
-            self.alchemy_rpc_url = f"https://arb-mainnet.g.alchemy.com/v2/{self.alchemy_api_key}"
+        if not self.ankr_rpc_url:
+            self.ankr_rpc_url = (
+                f"https://rpc.ankr.com/arbitrum/{self.ankr_api_key}"
+                if self.ankr_api_key
+                else "https://rpc.ankr.com/arbitrum"
+            )

@@ -72,8 +72,12 @@ async def main() -> None:
     trade_size = float(os.getenv("TRADE_SIZE_USD", "200"))
     min_spread = float(os.getenv("MIN_SPREAD_PCT", "2.0"))
 
-    alchemy_key = os.getenv("ALCHEMY_API_KEY", "")
-    primary_url = f"https://arb-mainnet.g.alchemy.com/v2/{alchemy_key}"
+    ankr_key = os.getenv("ANKR_API_KEY", "")
+    primary_url = (
+        f"https://rpc.ankr.com/arbitrum/{ankr_key}"
+        if ankr_key
+        else "https://rpc.ankr.com/arbitrum"
+    )
     fallback_url = "https://arb1.arbitrum.io/rpc"
     flashbots_url = ""
 

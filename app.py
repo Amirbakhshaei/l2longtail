@@ -62,11 +62,11 @@ async def _run_engine() -> None:
     scan_interval_a = float(os.getenv("SCAN_INTERVAL_A", "30"))
     scan_interval_b = float(os.getenv("SCAN_INTERVAL_B", "1"))
 
-    alchemy_key = os.getenv("ALCHEMY_API_KEY", "")
+    ankr_key = os.getenv("ANKR_API_KEY", "")
     primary_url = (
-        f"https://arb-mainnet.g.alchemy.com/v2/{alchemy_key}"
-        if alchemy_key
-        else ""
+        f"https://rpc.ankr.com/arbitrum/{ankr_key}"
+        if ankr_key
+        else "https://rpc.ankr.com/arbitrum"
     )
     fallback_url = "https://arb1.arbitrum.io/rpc"
 

@@ -14,7 +14,7 @@ from db.cache import ContractCache
 def settings() -> Settings:
     return Settings(
         dry_run=True,
-        alchemy_api_key="test",
+        ankr_api_key="test",
         llm_api_key="test",
         llm_base_url="https://fake.api.com/v1",
         keystore_passphrase="test",
