@@ -45,7 +45,6 @@ def start_arbitrage_engine() -> None:
 
 
 async def _run_engine() -> None:
-    from db.cache import ContractCache
     from db.cleared_tokens import ClearedTokensDB
     from infra.flea_market_discovery import FleaMarketDiscovery
     from infra.rate_limiter import TokenBucketRateLimiter
@@ -57,8 +56,9 @@ async def _run_engine() -> None:
     dry_run = os.getenv("DRY_RUN", "true").lower() == "true"
     trade_size = float(os.getenv("TRADE_SIZE_USD", "10"))
     min_spread = float(os.getenv("MIN_SPREAD_PCT", "0.5"))
-    scan_interval_a = float(os.getenv("SCAN_INTERVAL_A", "30"))
+    scan_interval_a = float(os.getenv("SCAN_INTERVAL_A", "2"))
     scan_interval_b = float(os.getenv("SCAN_INTERVAL_B", "1"))
+    lookback = int(os.getenv("SYNC_LOOKBACK_BLOCKS", "50"))
 
     ankr_key = os.getenv("ANKR_API_KEY", "")
     primary_url = (
@@ -79,9 +79,8 @@ async def _run_engine() -> None:
     )
     cleared_db = ClearedTokensDB()
 
-    cache = ContractCache("/data/longtail.db")
-    await cache.init()
-    flea = FleaMarketDiscovery(rpc, cache)
+    whitelist_path = os.getenv("WHITELIST_PATH", "config/whitelist.json")
+    flea = FleaMarketDiscovery(rpc, whitelist_path=whitelist_path)
 
     llm_key = os.getenv("LLM_API_KEY", "")
     llm_model = os.getenv("LLM_MODEL_PRIMARY", "llama-3.3-70b-versatile")
@@ -90,6 +89,7 @@ async def _run_engine() -> None:
         rpc_manager=rpc,
         cleared_db=cleared_db,
         flea_discovery=flea,
+        lookback_blocks=lookback,
     )
 
     process_b = ProcessBSniper(
@@ -105,8 +105,8 @@ async def _run_engine() -> None:
 
     mode = "LIVE" if not dry_run else "PAPER"
     logger.info(
-        "Engine starting | mode=%s trade_size=$%.0f min_spread=%.1f%%",
-        mode, trade_size, min_spread,
+        "Engine starting | mode=%s trade_size=$%.0f min_spread=%.1f%% pools=%d",
+        mode, trade_size, min_spread, flea.pool_count,
     )
     await tg.notify_engine_start(mode, trade_size, min_spread)
 
@@ -115,7 +115,7 @@ async def _run_engine() -> None:
             try:
                 await process_a._scan_cycle()
             except Exception as e:
-                logger.error("Indexer cycle failed: %s", e)
+                logger.error("Sync engine cycle failed: %s", e)
                 await tg.notify_error("Process A", str(e))
             await asyncio.sleep(scan_interval_a)
 
@@ -158,7 +158,7 @@ def get_latest_terminal_logs() -> str:
         target_log = LOG_FILE_PATH
 
     if not os.path.exists(target_log):
-        return "Engine initialized. Waiting for new block emissions to populate logs..."
+        return "Engine initialized. Waiting for Sync events to populate logs..."
     try:
         with open(target_log) as log_file:
             lines = log_file.readlines()
@@ -170,11 +170,11 @@ def get_latest_terminal_logs() -> str:
 # Fire the background trading pipeline instantly on app startup
 threading.Thread(target=start_arbitrage_engine, daemon=True).start()
 
-with gr.Blocks(title="L2 Flea Market Arbitrage Terminal") as demo:
-    gr.Markdown("# L2 Flea Market Triangular Arbitrage System")
+with gr.Blocks(title="L2 Sync Arbitrage Terminal") as demo:
+    gr.Markdown("# L2 Triangular Arbitrage — Sync Engine")
     gr.Markdown(
-        "Single-DEX triangular routing (WETH -> EXOTIC -> USDC -> WETH) "
-        "with math-first execution on Arbitrum One."
+        "Monitors whitelisted V2 pools for Sync events. "
+        "Routes WETH -> TOKEN -> USDC -> WETH on Arbitrum One."
     )
 
     gpu_hardware_string = zero_gpu_gatekeeper_bypass(1.0)
@@ -187,7 +187,7 @@ with gr.Blocks(title="L2 Flea Market Arbitrage Terminal") as demo:
         )
         storage_status = gr.Textbox(
             label="Persistent Memory Bank",
-            value="MOUNTED - /data/cleared_tokens.db",
+            value="MOUNTED - cleared_tokens.db",
             interactive=False,
         )
         execution_mode = gr.Textbox(

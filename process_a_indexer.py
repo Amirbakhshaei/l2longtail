@@ -1,13 +1,14 @@
 """
-Process A: Background Indexer (Fast Discovery)
+Process A: Pure Arbitrage Sync Engine
 
-Lightweight, fast, deterministic. Runs in the background to build a whitelist.
-Finds new tokens, applies liquidity/age/blacklist filters, and stores to DB.
+Monitors a static whitelist of established V2 pools for Sync events.
+When a Sync fires, stores the updated pool state in the DB for
+Process B to evaluate triangular arbitrage opportunities.
 
-No LLM calls. No security audits. Process A is a pure filter gate.
+No LLM calls. No PairCreated scanning. Pure Sync event monitoring.
 
 Flow:
-A1: Flea Market Scanner → A2: Filter Gate → A3: Database Store
+A1: Sync Event Scanner → A2: Pool State Store
 """
 from __future__ import annotations
 
@@ -15,13 +16,8 @@ import asyncio
 import logging
 import time
 
-from config.factories import (
-    MAJOR_ASSET_BLACKLIST,
-    MAX_LIQUIDITY_USD,
-    MIN_LIQUIDITY_USD,
-)
 from db.cleared_tokens import ClearedToken, ClearedTokensDB
-from infra.flea_market_discovery import FleaMarketDiscovery
+from infra.flea_market_discovery import FleaMarketDiscovery, SyncEvent
 from infra.rpc_manager import RPCManager
 
 logger = logging.getLogger(__name__)
@@ -33,104 +29,98 @@ class ProcessAIndexer:
         rpc_manager: RPCManager,
         cleared_db: ClearedTokensDB,
         flea_discovery: FleaMarketDiscovery,
+        lookback_blocks: int = 50,
     ) -> None:
         self.rpc = rpc_manager
         self.db = cleared_db
         self.flea = flea_discovery
+        self.lookback_blocks = lookback_blocks
         self._running = False
+        self._events_processed: int = 0
 
-    async def run(self, scan_interval: float = 60.0) -> None:
+    async def run(self, scan_interval: float = 5.0) -> None:
         self._running = True
-        logger.info("Process A: Indexer started")
+        logger.info(
+            "Process A: Sync Engine started (%d pools, %d block lookback)",
+            self.flea.pool_count,
+            self.lookback_blocks,
+        )
 
         while self._running:
             try:
                 await self._scan_cycle()
             except Exception as e:
-                logger.error("Indexer scan cycle failed: %s", e)
+                logger.error("Sync scan cycle failed: %s", e)
 
             await asyncio.sleep(scan_interval)
 
     async def _scan_cycle(self) -> None:
-        targets = await self.flea.scan_recent_pairs(lookback_blocks=1000)
-        logger.info("Process A: Found %d new targets", len(targets))
+        events = await self.flea.scan_sync_events(
+            lookback_blocks=self.lookback_blocks
+        )
 
-        for target in targets:
+        for event in events:
             try:
-                await self._process_target(target)
+                await self._process_event(event)
             except Exception as e:
                 logger.error(
-                    "Failed to process target %s: %s",
-                    target.token_address[:10],
+                    "Failed to process Sync for %s: %s",
+                    event.pair_address[:10],
                     e,
                 )
 
-    async def _process_target(self, target) -> None:
-        from agents.state import FleaMarketTarget
+    async def _process_event(self, event: SyncEvent) -> None:
+        self._events_processed += 1
 
-        if not isinstance(target, FleaMarketTarget):
+        weth_addr = "0x82af49447d8a07e3bd95bd0d56f35241523fab1"
+        usdc_addr = "0xaf88d065e77c8cc2239327c5edb3a432268e5831"
+        usdt_addr = "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9"
+
+        major_tokens = {weth_addr, usdc_addr, usdt_addr}
+
+        t0 = event.token0.lower()
+        t1 = event.token1.lower()
+
+        if t0 in major_tokens and t1 in major_tokens:
             return
 
-        logger.info(
-            "Processing %s on %s (liq=$%.0f)",
-            target.token_address[:10],
-            target.dex_venue_name,
-            target.initial_liquidity_usd,
-        )
-
-        if not self._passes_filter_gate(target):
+        if t0 not in major_tokens and t1 not in major_tokens:
             return
 
-        from infra.create2 import compute_v2_pair_address
-
-        pair = compute_v2_pair_address(
-            target.dex_venue_name,
-            target.token_address,
-            target.quote_address,
-        )
-        if not pair:
-            logger.debug(
-                "No pair address for %s on %s",
-                target.token_address[:10],
-                target.dex_venue_name,
-            )
-            return
+        if t0 in major_tokens:
+            exotic_token = t1
+        else:
+            exotic_token = t0
 
         cleared_token = ClearedToken(
-            token_address=target.token_address,
+            token_address=exotic_token,
             symbol="",
             name="",
-            dex_name=target.dex_venue_name,
-            pair_address=pair.pair_address,
-            factory_address=pair.factory,
-            token0=pair.token0,
-            token1=pair.token1,
-            liquidity_usd=target.initial_liquidity_usd,
+            dex_name=event.dex,
+            pair_address=event.pair_address,
+            factory_address="",
+            token0=event.token0,
+            token1=event.token1,
+            liquidity_usd=0.0,
             cleared_at=time.time(),
             audit_is_safe=True,
             audit_threats=[],
         )
         self.db.upsert_token(cleared_token)
 
-        logger.info(
-            "CLEARED: %s on %s (liq=$%.0f)",
-            target.token_address[:10],
-            target.dex_venue_name,
-            target.initial_liquidity_usd,
-        )
-
-    def _passes_filter_gate(self, target) -> bool:
-        if target.token_address.lower() in MAJOR_ASSET_BLACKLIST:
-            return False
-
-        if target.initial_liquidity_usd < MIN_LIQUIDITY_USD:
-            return False
-
-        if target.initial_liquidity_usd > MAX_LIQUIDITY_USD:
-            return False
-
-        return True
+        if self._events_processed % 50 == 0:
+            logger.info(
+                "SYNC ENGINE: %d events processed, last=%s on %s (r0=%d r1=%d)",
+                self._events_processed,
+                event.pair_address[:10],
+                event.dex,
+                event.reserve0,
+                event.reserve1,
+            )
 
     def stop(self) -> None:
         self._running = False
-        logger.info("Process A: Indexer stopped")
+        logger.info(
+            "Process A: Sync Engine stopped (%d events processed)",
+            self._events_processed,
+        )

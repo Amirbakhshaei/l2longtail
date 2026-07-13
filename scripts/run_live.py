@@ -6,8 +6,6 @@ import time
 from pathlib import Path
 
 from config.settings import Settings
-from db.blacklist import BlacklistDB
-from db.cache import ContractCache
 from db.cleared_tokens import ClearedTokensDB
 from infra.flea_market_discovery import FleaMarketDiscovery
 from infra.keystore import Keystore
@@ -59,16 +57,13 @@ async def main() -> None:
     setup_logger(settings.log_level)
 
     mode = "LIVE" if not settings.dry_run else "PAPER"
-    logger.info("Starting Triangular Arbitrage Engine (%s MODE)", mode)
+    logger.info("Starting Triangular Arbitrage Sync Engine (%s MODE)", mode)
     logger.info("  RPC Primary:  %s", settings.ankr_rpc_url[:40] + "...")
     logger.info("  RPC Fallback: %s", settings.fallback_rpc_url)
     logger.info("  LLM Model:    %s", settings.llm_model_primary)
     logger.info("  Trade Size:   $%.0f", settings.max_trade_size_usd)
     logger.info("  Min Spread:   %.1f%%", settings.min_spread_pct)
-
-    cache = ContractCache(settings.db_path)
-    BlacklistDB(settings.db_path)
-    await cache.init()
+    logger.info("  Whitelist:    %s", settings.whitelist_path)
 
     rate_limiter = TokenBucketRateLimiter(
         rate=settings.rpc_rate_limit_per_sec,
@@ -95,12 +90,13 @@ async def main() -> None:
     signal.signal(signal.SIGTERM, _handle_signal)
 
     cleared_db = ClearedTokensDB()
-    flea = FleaMarketDiscovery(rpc_manager, cache)
+    flea = FleaMarketDiscovery(rpc_manager, whitelist_path=settings.whitelist_path)
 
     process_a = ProcessAIndexer(
         rpc_manager=rpc_manager,
         cleared_db=cleared_db,
         flea_discovery=flea,
+        lookback_blocks=settings.sync_lookback_blocks,
     )
 
     process_b = ProcessBSniper(
@@ -114,15 +110,18 @@ async def main() -> None:
         llm_model=settings.llm_model_primary,
     )
 
-    logger.info("Engine ready. Starting Process A (Indexer) + Process B (Sniper)...")
+    logger.info(
+        "Engine ready. %d whitelisted pools. Starting Sync Engine + Sniper...",
+        flea.pool_count,
+    )
 
     async def run_process_a() -> None:
         while not _shutdown:
             try:
                 await process_a._scan_cycle()
             except Exception as e:
-                logger.error("Indexer cycle failed: %s", e)
-            await asyncio.sleep(settings.scanner_scan_interval)
+                logger.error("Sync engine cycle failed: %s", e)
+            await asyncio.sleep(2.0)
 
     async def run_process_b() -> None:
         while not _shutdown:
@@ -145,8 +144,9 @@ async def main() -> None:
     aborted = [r for r in results if r.status == "ABORTED"]
 
     logger.info(
-        "SESSION COMPLETE | duration=%.0fs executed=%d aborted=%d cleared=%d",
+        "SESSION COMPLETE | duration=%.0fs executed=%d aborted=%d cleared=%d sync_events=%d",
         elapsed, len(executed), len(aborted), cleared_db.token_count(),
+        process_a._events_processed,
     )
 
     if results:

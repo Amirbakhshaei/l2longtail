@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     gas_baseline_usd: float = 0.02
     max_trade_size_usd: float = 10.0
 
+    whitelist_path: str = "config/whitelist.json"
+    sync_lookback_blocks: int = 50
+
     dexscreener_rate_limit: float = 3.0
     scanner_scan_interval: int = 30
 

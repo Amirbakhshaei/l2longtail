@@ -1,8 +1,8 @@
 """
-Main Orchestrator: Runs Process A (Indexer) and Process B (Sniper) together.
+Main Orchestrator: Runs Process A (Sync Engine) and Process B (Sniper) together.
 
-Process A runs in the background building the whitelist (no LLM).
-Process B runs in the foreground executing triangular arbitrage.
+Process A monitors whitelisted pools for Sync events.
+Process B evaluates triangular arbitrage on updated pools.
 """
 from __future__ import annotations
 
@@ -16,7 +16,6 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-from db.cache import ContractCache
 from db.cleared_tokens import ClearedTokensDB
 from infra.flea_market_discovery import FleaMarketDiscovery
 from infra.rate_limiter import TokenBucketRateLimiter
@@ -70,6 +69,7 @@ async def main() -> None:
     duration = int(os.getenv("SCAN_DURATION", "300"))
     trade_size = float(os.getenv("TRADE_SIZE_USD", "10"))
     min_spread = float(os.getenv("MIN_SPREAD_PCT", "0.5"))
+    lookback = int(os.getenv("SYNC_LOOKBACK_BLOCKS", "50"))
 
     ankr_key = os.getenv("ANKR_API_KEY", "")
     primary_url = (
@@ -83,18 +83,19 @@ async def main() -> None:
     rpc = RPCManager(primary_url, fallback_url, "", rate_limiter)
     cleared_db = ClearedTokensDB()
 
-    cache = ContractCache("longtail.db")
-    await cache.init()
-    flea = FleaMarketDiscovery(rpc, cache)
+    whitelist_path = os.getenv("WHITELIST_PATH", "config/whitelist.json")
+    flea = FleaMarketDiscovery(rpc, whitelist_path=whitelist_path)
 
     llm_key = os.getenv("LLM_API_KEY", "")
     llm_model = os.getenv("LLM_MODEL_PRIMARY", "llama-3.3-70b-versatile")
 
-    print("\nTRIANGULAR ARBITRAGE SYSTEM")
+    print("\nTRIANGULAR ARBITRAGE SYSTEM (SYNC ENGINE)")
     print(f"  Mode:        {'PAPER' if dry_run else 'LIVE'}")
     print(f"  Duration:    {duration}s")
     print(f"  Trade size:  ${trade_size:.0f}")
     print(f"  Min spread:  {min_spread:.1f}%")
+    print(f"  Pools:       {flea.pool_count}")
+    print(f"  Lookback:    {lookback} blocks")
     print(f"  CSV output:  {CSV_FILE}")
     print()
 
@@ -102,6 +103,7 @@ async def main() -> None:
         rpc_manager=rpc,
         cleared_db=cleared_db,
         flea_discovery=flea,
+        lookback_blocks=lookback,
     )
 
     process_b = ProcessBSniper(
@@ -125,8 +127,8 @@ async def main() -> None:
             try:
                 await process_a._scan_cycle()
             except Exception as e:
-                logger.error("Indexer cycle failed: %s", e)
-            await asyncio.sleep(30.0)
+                logger.error("Sync engine cycle failed: %s", e)
+            await asyncio.sleep(2.0)
 
     async def run_process_b():
         while not _shutdown:
@@ -136,7 +138,7 @@ async def main() -> None:
                 logger.error("Sniper cycle failed: %s", e)
             await asyncio.sleep(1.0)
 
-    print("Starting Process A (Indexer) and Process B (Sniper)...")
+    print("Starting Process A (Sync Engine) and Process B (Sniper)...")
     print()
 
     await asyncio.gather(
@@ -155,6 +157,7 @@ async def main() -> None:
     print(f"  Trades executed: {len(executed)}")
     print(f"  Trades aborted:  {len(aborted)}")
     print(f"  Cleared tokens:  {cleared_db.token_count()}")
+    print(f"  Sync events:     {process_a._events_processed}")
     print()
 
     if results:

@@ -1,0 +1,26 @@
+[
+  {
+    "pair_address": "0xf64dfe17c8b87f012fcf50fbda1d62bfa148366a",
+    "token0": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "token1": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "dex": "uniswap_v2"
+  },
+  {
+    "pair_address": "0x57b85fef094e10b5eecdf350af688299e9553378",
+    "token0": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "token1": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "dex": "sushiswap"
+  },
+  {
+    "pair_address": "0x3797927e7fc20f13f46b295f8889ea8050cb5e21",
+    "token0": "0x6efa9b8883dfb78fd75cd89d8474c44c3cbda469",
+    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "dex": "uniswap_v2"
+  },
+  {
+    "pair_address": "0xaffbe59f6dd93f0bb129f0cfb94d84c2fb87f39f",
+    "token0": "0x4749881d148d91f63b69abf6a67fed139b233ca6",
+    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "dex": "uniswap_v2"
+  }
+]

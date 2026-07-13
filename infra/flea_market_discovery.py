@@ -1,54 +1,44 @@
+"""
+Whitelist Sync Event Monitor.
+
+Monitors a static whitelist of established V2 pools for Sync events.
+When a Sync fires (reserve update from a trade), parses the updated reserves
+and passes the pool to Process B for triangular arbitrage evaluation.
+
+No PairCreated scanning. No factory looping. Pure Sync event monitoring.
+"""
 from __future__ import annotations
 
-import asyncio
+import json
 import logging
 import time
-from collections import deque
 from dataclasses import dataclass
+from pathlib import Path
 
-from web3 import Web3
-
-from agents.state import FleaMarketTarget
-from config.factories import (
-    FACTORY_REGISTRY,
-    MAJOR_ASSET_BLACKLIST,
-    MAX_LIQUIDITY_USD,
-    MAX_TOKEN_AGE_HOURS,
-    MIN_LIQUIDITY_USD,
-    FactoryConfig,
-)
-from db.cache import ContractCache
-from infra.price_oracle import WETHPriceOracle
 from infra.rpc_manager import RPCManager
 
 logger = logging.getLogger(__name__)
 
-WETH_ADDRESS = "0x82aF49447D8a07e3bd95bD0d56f35241523fBab1".lower()
-USDC_ADDRESS = "0xaf88d065e77c8cC2239327C5EDb3A432268e5831".lower()
-
-V2_PAIR_CREATED_ABI = [
-    {
-        "anonymous": False,
-        "name": "PairCreated",
-        "type": "event",
-        "inputs": [
-            {"indexed": True, "name": "token0", "type": "address"},
-            {"indexed": True, "name": "token1", "type": "address"},
-            {"indexed": False, "name": "pair", "type": "address"},
-            {"indexed": False, "name": "", "type": "uint256"},
-        ],
-    }
-]
+V2_SYNC_TOPIC = "0x1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1"
 
 
 @dataclass
-class DiscoveredPair:
-    token_address: str
-    quote_address: str
-    pool_address: str
-    dex_venue: str
-    factory_address: str
+class WhitelistPool:
+    pair_address: str
+    token0: str
+    token1: str
+    dex: str
+
+
+@dataclass
+class SyncEvent:
+    pair_address: str
+    token0: str
+    token1: str
+    reserve0: int
+    reserve1: int
     block_number: int
+    dex: str
     timestamp: float
 
 
@@ -56,298 +46,149 @@ class FleaMarketDiscovery:
     def __init__(
         self,
         rpc_manager: RPCManager,
-        cache: ContractCache,
-        wss_url: str | None = None,
+        whitelist_path: str = "config/whitelist.json",
     ) -> None:
         self.rpc = rpc_manager
-        self.cache = cache
-        self.wss_url = wss_url
-        self._seen: deque[str] = deque(maxlen=10000)
-        self._queue: asyncio.Queue[DiscoveredPair] = asyncio.Queue()
-        self._running = False
-        self.oracle = WETHPriceOracle(rpc_manager)
+        self._whitelist: list[WhitelistPool] = []
+        self._whitelist_path = whitelist_path
+        self._seen_blocks: dict[str, int] = {}
+        self._load_whitelist()
 
-    def _is_major_asset(self, addr: str) -> bool:
-        return addr.lower() in MAJOR_ASSET_BLACKLIST
+    def _load_whitelist(self) -> None:
+        path = Path(self._whitelist_path)
+        if not path.exists():
+            logger.error("Whitelist file not found: %s", path)
+            return
 
-    async def _get_weth_price(self) -> float | None:
         try:
-            return await self.oracle.get_weth_price()
-        except ValueError:
-            return None
-
-    def _classify_pair(
-        self, token0: str, token1: str
-    ) -> tuple[str, str] | None:
-        t0_major = self._is_major_asset(token0)
-        t1_major = self._is_major_asset(token1)
-
-        if t0_major and t1_major:
-            return None
-        if not t0_major and not t1_major:
-            return None
-
-        if t0_major:
-            return token1, token0
-        return token0, token1
-
-    async def _check_token_age(self, token_address: str) -> float:
-        try:
-            current_block = await self.rpc.get_block_number()
-            creation_block = current_block - 1000
-
-            deploy_check = await self.rpc.call_contract(
-                token_address, "0x"
-            )
-            if deploy_check and deploy_check != "0x" and deploy_check != "0x0":
-                return 0.0
-
-            current = await self._get_block_timestamp(current_block)
-            deploy = await self._get_block_timestamp(creation_block)
-            age_seconds = current - deploy
-            return age_seconds / 3600.0
-        except Exception:
-            return 0.0
-
-    async def _get_block_timestamp(self, block_number: int) -> float:
-        try:
-            result = await self.rpc.call("eth_getBlockByNumber", [hex(block_number), False])
-            return float(int(result["result"]["timestamp"], 16))
-        except Exception:
-            return time.time()
-
-    async def _estimate_liquidity(
-        self, pair_address: str, weth_price: float
-    ) -> float:
-        try:
-            reserves_raw = await self.rpc.call_contract(pair_address, "0x0902f1ac")
-            data = bytes.fromhex(reserves_raw.replace("0x", ""))
-            r0 = int.from_bytes(data[0:32], "big")
-            r1 = int.from_bytes(data[32:64], "big")
-
-            token0_raw = await self.rpc.call_contract(pair_address, "0x0dfe1681")
-            token1_raw = await self.rpc.call_contract(pair_address, "0xd21220a7")
-
-            token0 = "0x" + token0_raw[-40:].lower()
-            token1 = "0x" + token1_raw[-40:].lower()
-
-            if token0 == WETH_ADDRESS:
-                return (r0 / 1e18) * weth_price
-            elif token0 == USDC_ADDRESS:
-                return r0 / 1e6
-
-            if token1 == WETH_ADDRESS:
-                return (r1 / 1e18) * weth_price
-            elif token1 == USDC_ADDRESS:
-                return r1 / 1e6
-
-            return 0.0
+            raw = json.loads(path.read_text())
+            self._whitelist = [
+                WhitelistPool(
+                    pair_address=entry["pair_address"].lower(),
+                    token0=entry["token0"].lower(),
+                    token1=entry["token1"].lower(),
+                    dex=entry["dex"],
+                )
+                for entry in raw
+            ]
+            logger.info("Loaded %d whitelisted pools", len(self._whitelist))
         except Exception as e:
-            logger.debug("_estimate_liquidity failed for %s: %s", pair_address, e)
-            return 0.0
+            logger.error("Failed to load whitelist: %s", e)
 
-    async def _passes_all_gates(
-        self, pair: DiscoveredPair, weth_price: float
-    ) -> FleaMarketTarget | None:
-        cache_key = pair.token_address.lower()
-        if await self.cache.is_known_bad_token(cache_key):
-            return None
+    @property
+    def whitelisted_addresses(self) -> list[str]:
+        return [p.pair_address for p in self._whitelist]
 
-        liquidity = await self._estimate_liquidity(pair.pool_address, weth_price)
-        if liquidity < MIN_LIQUIDITY_USD:
-            await self.cache.mark_bad_token(cache_key, "below_min_liquidity")
-            return None
-        if liquidity > MAX_LIQUIDITY_USD:
-            await self.cache.mark_bad_token(cache_key, "above_max_liquidity")
-            return None
+    @property
+    def pool_count(self) -> int:
+        return len(self._whitelist)
 
-        age_hours = await self._check_token_age(pair.token_address)
-        if age_hours > MAX_TOKEN_AGE_HOURS:
-            await self.cache.mark_bad_token(cache_key, "token_too_old")
-            return None
+    def get_pool_meta(self, pair_address: str) -> WhitelistPool | None:
+        lower = pair_address.lower()
+        for pool in self._whitelist:
+            if pool.pair_address == lower:
+                return pool
+        return None
 
-        return FleaMarketTarget(
-            token_address=pair.token_address,
-            quote_address=pair.quote_address,
-            pool_address=pair.pool_address,
-            dex_venue_name=pair.dex_venue,
-            initial_liquidity_usd=liquidity,
-            factory_address=pair.factory_address,
-            token_age_hours=age_hours,
-        )
+    async def scan_sync_events(
+        self, lookback_blocks: int = 50
+    ) -> list[SyncEvent]:
+        if not self._whitelist:
+            logger.warning("Empty whitelist — nothing to scan")
+            return []
 
-    def _parse_v2_pair_created(
-        self, log: dict, factory_config: FactoryConfig
-    ) -> DiscoveredPair | None:
-        try:
-            topics = log.get("topics", [])
-            if len(topics) < 3:
-                return None
-
-            token0 = "0x" + topics[1][-40:]
-            token1 = "0x" + topics[2][-40:]
-
-            classified = self._classify_pair(token0, token1)
-            if not classified:
-                return None
-
-            exotic_token, quote_token = classified
-
-            data = log.get("data", "0x").replace("0x", "")
-            if len(data) >= 80:
-                pool_address = "0x" + data[24:64]
-            else:
-                return None
-
-            block_number = int(log.get("blockNumber", "0x0"), 16)
-
-            pair_key = f"{exotic_token.lower()}:{pool_address.lower()}"
-            if pair_key in self._seen:
-                return None
-            self._seen.add(pair_key)
-
-            return DiscoveredPair(
-                token_address=exotic_token,
-                quote_address=quote_token,
-                pool_address=pool_address,
-                dex_venue=factory_config.dex_venue,
-                factory_address=factory_config.factory_address,
-                block_number=block_number,
-                timestamp=time.time(),
-            )
-        except Exception as e:
-            logger.debug("parse_v2_pair_created failed: %s", e)
-            return None
-
-    def _parse_v3_pool_initialized(
-        self, log: dict, factory_config: FactoryConfig
-    ) -> DiscoveredPair | None:
-        try:
-            topics = log.get("topics", [])
-            if len(topics) < 3:
-                return None
-
-            token0 = "0x" + topics[1][-40:]
-            token1 = "0x" + topics[2][-40:]
-
-            classified = self._classify_pair(token0, token1)
-            if not classified:
-                return None
-
-            exotic_token, quote_token = classified
-
-            data = log.get("data", "0x").replace("0x", "")
-            if len(data) >= 192:
-                pool_address = "0x" + data[152:192]
-            else:
-                return None
-
-            block_number = int(log.get("blockNumber", "0x0"), 16)
-
-            pair_key = f"{exotic_token.lower()}:{pool_address.lower()}"
-            if pair_key in self._seen:
-                return None
-            self._seen.add(pair_key)
-
-            return DiscoveredPair(
-                token_address=exotic_token,
-                quote_address=quote_token,
-                pool_address=pool_address,
-                dex_venue=factory_config.dex_venue,
-                factory_address=factory_config.factory_address,
-                block_number=block_number,
-                timestamp=time.time(),
-            )
-        except Exception as e:
-            logger.debug("parse_v3_pool_initialized failed: %s", e)
-            return None
-
-    async def scan_recent_pairs(
-        self, lookback_blocks: int = 150
-    ) -> list[FleaMarketTarget]:
         current_block = await self.rpc.get_block_number()
         from_block = max(current_block - lookback_blocks, 0)
 
-        weth_price = await self._get_weth_price()
-        if weth_price is None:
-            logger.warning("WETH oracle unavailable, skipping flea market scan")
-            return []
-
-        targets: list[FleaMarketTarget] = []
-
-        for factory_config in FACTORY_REGISTRY:
-            try:
-                filter_obj = {
-                    "fromBlock": hex(int(from_block)),
-                    "toBlock": hex(int(current_block)),
-                    "address": [factory_config.factory_address],
-                    "topics": [factory_config.event_topic],
-                }
-
-                resp = await self.rpc.call("eth_getLogs", [filter_obj])
-
-                if "error" in resp:
-                    logger.error(
-                        "RPC Error on %s block %d-%d: %s",
-                        factory_config.name,
-                        from_block,
-                        current_block,
-                        resp["error"],
-                    )
-                    continue
-
-                logs = resp.get("result", [])
-
-                for log in logs:
-                    if factory_config.version == "v3":
-                        pair = self._parse_v3_pool_initialized(log, factory_config)
-                    else:
-                        pair = self._parse_v2_pair_created(log, factory_config)
-
-                    if not pair:
-                        continue
-
-                    target = await self._passes_all_gates(pair, weth_price)
-                    if target:
-                        targets.append(target)
-                        logger.info(
-                            "FLEA: %s on %s liq=$%.0f age=%.1fh",
-                            target.token_address[:10],
-                            target.dex_venue_name,
-                            target.initial_liquidity_usd,
-                            target.token_age_hours,
-                        )
-
-            except Exception as e:
-                logger.warning(
-                    "scan_recent_pairs failed for %s: %s",
-                    factory_config.name,
-                    e,
-                )
-
-        return targets
-
-    async def listen(self) -> None:
-        if not self.wss_url:
-            logger.warning("No WSS URL provided, falling back to polling")
-            return
-
-        self._running = True
-        logger.info("Starting WebSocket listener on %s", self.wss_url)
+        filter_obj = {
+            "fromBlock": hex(int(from_block)),
+            "toBlock": hex(int(current_block)),
+            "address": self.whitelisted_addresses,
+            "topics": [V2_SYNC_TOPIC],
+        }
 
         try:
-            provider = Web3.AsyncHTTPProvider(self.wss_url)
-            Web3(provider)
+            resp = await self.rpc.call("eth_getLogs", [filter_obj])
+        except Exception as e:
+            logger.error("eth_getLogs failed: %s", e)
+            return []
 
-            for factory_config in FACTORY_REGISTRY:
-                logger.info(
-                    "Subscribed to %s PairCreated events",
-                    factory_config.name,
+        if "error" in resp:
+            logger.error("RPC error on eth_getLogs: %s", resp["error"])
+            return []
+
+        logs = resp.get("result", [])
+        events: list[SyncEvent] = []
+
+        for log in logs:
+            event = self._parse_sync_log(log)
+            if event:
+                events.append(event)
+
+        if events:
+            logger.info(
+                "SYNC: %d events across %d blocks (blocks %d-%d)",
+                len(events),
+                lookback_blocks,
+                from_block,
+                current_block,
+            )
+
+        return events
+
+    def _parse_sync_log(self, log: dict) -> SyncEvent | None:
+        try:
+            pair_address = log.get("address", "").lower()
+
+            meta = self.get_pool_meta(pair_address)
+            if not meta:
+                return None
+
+            block_number = int(log.get("blockNumber", "0x0"), 16)
+
+            dedup_key = f"{pair_address}:{block_number}"
+            if dedup_key in self._seen_blocks:
+                return None
+            self._seen_blocks[dedup_key] = block_number
+
+            if len(self._seen_blocks) > 50000:
+                oldest = min(self._seen_blocks.values())
+                self._seen_blocks = {
+                    k: v for k, v in self._seen_blocks.items() if v > oldest
+                }
+
+            data_hex = log.get("data", "0x")
+            if data_hex.startswith("0x"):
+                data_hex = data_hex[2:]
+
+            if len(data_hex) < 128:
+                logger.debug(
+                    "Sync data too short for %s: %d chars",
+                    pair_address[:10],
+                    len(data_hex),
                 )
+                return None
+
+            reserve0 = int(data_hex[0:64], 16)
+            reserve1 = int(data_hex[64:128], 16)
+
+            if reserve0 == 0 and reserve1 == 0:
+                return None
+
+            return SyncEvent(
+                pair_address=pair_address,
+                token0=meta.token0,
+                token1=meta.token1,
+                reserve0=reserve0,
+                reserve1=reserve1,
+                block_number=block_number,
+                dex=meta.dex,
+                timestamp=time.time(),
+            )
 
         except Exception as e:
-            logger.error("WebSocket listener failed: %s", e)
-            self._running = False
+            logger.debug("Failed to parse Sync log: %s", e)
+            return None
 
     async def stop(self) -> None:
-        self._running = False
+        pass
