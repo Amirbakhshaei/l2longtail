@@ -20,6 +20,7 @@ from db.cleared_tokens import ClearedTokensDB
 from infra.flea_market_discovery import FleaMarketDiscovery
 from infra.rate_limiter import TokenBucketRateLimiter
 from infra.rpc_manager import RPCManager
+from monitoring.alerts import TelegramAlerts
 from process_a_indexer import ProcessAIndexer
 from process_b_sniper import ProcessBSniper
 
@@ -89,6 +90,11 @@ async def main() -> None:
     llm_key = os.getenv("LLM_API_KEY", "")
     llm_model = os.getenv("LLM_MODEL_PRIMARY", "llama-3.3-70b-versatile")
 
+    tg = TelegramAlerts(
+        os.getenv("TELEGRAM_BOT_TOKEN", ""),
+        os.getenv("TELEGRAM_CHAT_ID", ""),
+    )
+
     print("\nTRIANGULAR ARBITRAGE SYSTEM (SYNC ENGINE)")
     print(f"  Mode:        {'PAPER' if dry_run else 'LIVE'}")
     print(f"  Duration:    {duration}s")
@@ -115,12 +121,17 @@ async def main() -> None:
         dry_run=dry_run,
         llm_api_key=llm_key,
         llm_model=llm_model,
+        on_opportunity=tg.notify_opportunity,
     )
 
     start_time = time.monotonic()
 
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
+
+    await tg.notify_engine_start(
+        "PAPER" if dry_run else "LIVE", trade_size, min_spread
+    )
 
     async def run_process_a():
         while not _shutdown:
@@ -133,9 +144,29 @@ async def main() -> None:
     async def run_process_b():
         while not _shutdown:
             try:
+                old_count = len(process_b.get_results())
                 await process_b._scan_cycle()
+                new_results = process_b.get_results()[old_count:]
+
+                for r in new_results:
+                    if r.status == "EXECUTED":
+                        await tg.notify_trade_executed(
+                            token_address=r.token_address,
+                            buy_dex=r.dex_name,
+                            sell_dex=r.dex_name,
+                            spread_pct=r.gross_spread_pct,
+                            net_profit=r.net_profit_usd,
+                            mode="PAPER" if dry_run else "LIVE",
+                        )
+                    elif r.status == "ABORTED":
+                        await tg.notify_trade_aborted(
+                            token_address=r.token_address,
+                            spread_pct=r.gross_spread_pct,
+                            reason=r.abort_reason,
+                        )
             except Exception as e:
                 logger.error("Sniper cycle failed: %s", e)
+                await tg.notify_error("Process B", str(e))
             await asyncio.sleep(1.0)
 
     print("Starting Process A (Sync Engine) and Process B (Sniper)...")

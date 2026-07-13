@@ -101,6 +101,7 @@ async def _run_engine() -> None:
         dry_run=dry_run,
         llm_api_key=llm_key,
         llm_model=llm_model,
+        on_opportunity=tg.notify_opportunity,
     )
 
     mode = "LIVE" if not dry_run else "PAPER"

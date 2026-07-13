@@ -97,6 +97,32 @@ class TelegramAlerts:
         )
         await self.send_telegram(msg)
 
+    async def notify_opportunity(
+        self, token_address: str, dex: str, spread_pct: float,
+        net_profit: float, trade_size: float, stage: str,
+    ) -> None:
+        msg = (
+            f"<b>Opportunity Detected [{stage}]</b>\n"
+            f"Token: <code>{token_address}</code>\n"
+            f"DEX: <code>{dex}</code>\n"
+            f"Spread: <code>{spread_pct:.2f}%</code>\n"
+            f"Net profit: <code>${net_profit:.4f}</code>\n"
+            f"Trade size: <code>${trade_size:.0f}</code>\n"
+            f"Time: <code>{time.strftime('%H:%M:%S')}</code>"
+        )
+        await self.send_telegram(msg)
+
+    async def notify_sync_event(
+        self, pair_address: str, dex: str, reserve0: int, reserve1: int
+    ) -> None:
+        msg = (
+            f"<b>Sync Event</b>\n"
+            f"Pool: <code>{pair_address}</code>\n"
+            f"DEX: <code>{dex}</code>\n"
+            f"Reserves: <code>r0={reserve0}</code> <code>r1={reserve1}</code>"
+        )
+        await self.send_telegram(msg)
+
     async def notify_status_summary(
         self, cleared_count: int, weth_price: float,
         executed: int, aborted: int, profit: float,

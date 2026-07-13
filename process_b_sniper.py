@@ -18,6 +18,7 @@ import asyncio
 import json
 import logging
 import time
+from collections.abc import Awaitable, Callable
 
 from config.constants import (
     DEX_ROUTERS,
@@ -417,6 +418,7 @@ class ProcessBSniper:
         live_executor=None,
         llm_api_key: str = "",
         llm_model: str = "llama-3.3-70b-versatile",
+        on_opportunity: Callable[..., Awaitable[None]] | None = None,
     ) -> None:
         self.oracle = WETHPriceOracle(rpc_manager)
         self.scanner = TriangularScanner(rpc_manager, cleared_db, self.oracle)
@@ -427,6 +429,7 @@ class ProcessBSniper:
         self.min_net_profit_usd = min_net_profit_usd
         self.dry_run = dry_run
         self.live_executor = live_executor
+        self.on_opportunity = on_opportunity
 
         self.llm_auditor = (
             LLMSecurityAuditor(llm_api_key, llm_model) if llm_api_key else None
@@ -512,6 +515,19 @@ class ProcessBSniper:
             path.dex_name,
         )
 
+        if self.on_opportunity:
+            net_profit_math, _ = compute_net_profit(
+                path.gross_spread_pct, self.trade_size_usd, self.gas_usd
+            )
+            await self.on_opportunity(
+                token_address=path.token_address,
+                dex=path.dex_name,
+                spread_pct=path.gross_spread_pct,
+                net_profit=net_profit_math,
+                trade_size=self.trade_size_usd,
+                stage="MATH",
+            )
+
         sim_success, sim_reason, sim_output = (
             await self.simulator.simulate_triangular(
                 path, self.trade_size_usd, self._weth_price
@@ -557,6 +573,16 @@ class ProcessBSniper:
             path.token_address[:10],
             net_profit,
         )
+
+        if self.on_opportunity:
+            await self.on_opportunity(
+                token_address=path.token_address,
+                dex=path.dex_name,
+                spread_pct=path.gross_spread_pct,
+                net_profit=net_profit,
+                trade_size=self.trade_size_usd,
+                stage="SIM",
+            )
 
         if self.llm_auditor:
             from agents.minifier import minify_solidity
