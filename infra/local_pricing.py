@@ -17,6 +17,54 @@ V2_FEE = 0.997
 LP_FEE_BPS = 30
 
 
+def get_amount_out(amount_in: int, reserve_in: int, reserve_out: int, fee_tier: int = 3) -> int:
+    """
+    V2 constant-product output calculation with fee deduction.
+
+    amount_in_after_fee = amount_in * (1000 - fee_tier) / 1000
+    numerator = amount_in_after_fee * reserve_out
+    denominator = reserve_in + amount_in_after_fee
+    return numerator // denominator
+
+    Returns 0 if reserves are zero or amount_in is zero.
+    """
+    if reserve_in == 0 or reserve_out == 0 or amount_in == 0:
+        return 0
+    amount_in_after_fee = amount_in * (1000 - fee_tier)
+    numerator = amount_in_after_fee * reserve_out
+    denominator = (reserve_in * 1000) + amount_in_after_fee
+    return numerator // denominator
+
+
+def calculate_triangular_route(
+    input_weth: int,
+    res_weth_exotic: tuple[int, int],
+    res_exotic_usdc: tuple[int, int],
+    res_usdc_weth: tuple[int, int],
+) -> int:
+    """
+    3-hop triangular arbitrage: WETH -> EXOTIC -> USDC -> WETH.
+
+    All reserves are (reserve0, reserve1) as returned by getReserves().
+    The caller must ensure the tuple ordering matches the direction of each hop:
+      - res_weth_exotic: (weth_reserve, exotic_reserve) — WETH in, EXOTIC out
+      - res_exotic_usdc: (exotic_reserve, usdc_reserve)  — EXOTIC in, USDC out
+      - res_usdc_weth:  (usdc_reserve, weth_reserve)    — USDC in, WETH out
+
+    Returns final_weth_out. Returns 0 if any hop fails due to insufficient liquidity.
+    """
+    hop1 = get_amount_out(input_weth, res_weth_exotic[0], res_weth_exotic[1])
+    if hop1 == 0:
+        return 0
+
+    hop2 = get_amount_out(hop1, res_exotic_usdc[0], res_exotic_usdc[1])
+    if hop2 == 0:
+        return 0
+
+    hop3 = get_amount_out(hop2, res_usdc_weth[0], res_usdc_weth[1])
+    return hop3
+
+
 def compute_v2_output(
     reserve_in: int,
     reserve_out: int,

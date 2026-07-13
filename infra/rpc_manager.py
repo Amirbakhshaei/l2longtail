@@ -28,28 +28,28 @@ class RPCManager:
         self.rate_limiter = rate_limiter
         self._failover_active = False
         self._consecutive_failures = 0
-        self._client: httpx.AsyncClient | None = None
-
-    async def _get_client(self) -> httpx.AsyncClient:
-        if self._client is None or self._client.is_closed:
-            self._client = httpx.AsyncClient(timeout=30.0)
-        return self._client
+        self._client = httpx.AsyncClient(
+            http2=True,
+            timeout=5.0,
+            limits=httpx.Limits(
+                max_keepalive_connections=100,
+                max_connections=100,
+            ),
+        )
 
     async def close(self) -> None:
-        if self._client and not self._client.is_closed:
-            await self._client.aclose()
+        await self._client.aclose()
 
     async def _http_post(
         self, url: str, method: str, params: list[Any]
     ) -> dict[str, Any]:
-        client = await self._get_client()
         payload = {"jsonrpc": "2.0", "method": method, "params": params, "id": 1}
-        response = await client.post(url, json=payload)
-        
-        # --- DIAGNOSTIC INTERCEPT ---
+        response = await self._client.post(url, json=payload)
+
         if response.status_code >= 400:
-            logger.error("HTTP %d on %s: %s", response.status_code, method, response.text)
-        # ----------------------------
+            logger.error(
+                "HTTP %d on %s: %s", response.status_code, method, response.text
+            )
 
         response.raise_for_status()
         data: dict[str, Any] = response.json()
