@@ -48,17 +48,15 @@ async def _run_engine() -> None:
     from db.cache import ContractCache
     from db.cleared_tokens import ClearedTokensDB
     from infra.flea_market_discovery import FleaMarketDiscovery
-    from infra.pool_fetcher import PoolFetcher
     from infra.rate_limiter import TokenBucketRateLimiter
     from infra.rpc_manager import RPCManager
-    from infra.source_fetcher import SourceFetcher
     from monitoring.alerts import TelegramAlerts
-    from process_a_indexer import LLMSecurityAuditor, ProcessAIndexer
+    from process_a_indexer import ProcessAIndexer
     from process_b_sniper import ProcessBSniper
 
     dry_run = os.getenv("DRY_RUN", "true").lower() == "true"
-    trade_size = float(os.getenv("TRADE_SIZE_USD", "200"))
-    min_spread = float(os.getenv("MIN_SPREAD_PCT", "2.0"))
+    trade_size = float(os.getenv("TRADE_SIZE_USD", "10"))
+    min_spread = float(os.getenv("MIN_SPREAD_PCT", "0.5"))
     scan_interval_a = float(os.getenv("SCAN_INTERVAL_A", "30"))
     scan_interval_b = float(os.getenv("SCAN_INTERVAL_B", "1"))
 
@@ -79,9 +77,7 @@ async def _run_engine() -> None:
     rpc = RPCManager(
         primary_url or fallback_url, fallback_url, "", rate_limiter
     )
-    source_fetcher = SourceFetcher()
     cleared_db = ClearedTokensDB()
-    pool_fetcher = PoolFetcher(rpc)
 
     cache = ContractCache("/data/longtail.db")
     await cache.init()
@@ -89,24 +85,22 @@ async def _run_engine() -> None:
 
     llm_key = os.getenv("LLM_API_KEY", "")
     llm_model = os.getenv("LLM_MODEL_PRIMARY", "llama-3.3-70b-versatile")
-    llm_auditor = LLMSecurityAuditor(llm_key, llm_model)
 
     process_a = ProcessAIndexer(
         rpc_manager=rpc,
-        source_fetcher=source_fetcher,
         cleared_db=cleared_db,
-        llm_auditor=llm_auditor,
         flea_discovery=flea,
     )
 
     process_b = ProcessBSniper(
         cleared_db=cleared_db,
-        pool_fetcher=pool_fetcher,
         rpc_manager=rpc,
         trade_size_usd=trade_size,
         gas_usd=0.02,
         min_spread_pct=min_spread,
         dry_run=dry_run,
+        llm_api_key=llm_key,
+        llm_model=llm_model,
     )
 
     mode = "LIVE" if not dry_run else "PAPER"
@@ -133,20 +127,20 @@ async def _run_engine() -> None:
                 new_results = process_b.get_results()[old_count:]
 
                 for r in new_results:
-                    if r["status"] == "EXECUTED":
+                    if r.status == "EXECUTED":
                         await tg.notify_trade_executed(
-                            token_address=r["token_address"],
-                            buy_dex=r["buy_dex"],
-                            sell_dex=r["sell_dex"],
-                            spread_pct=r["spread_pct"],
-                            net_profit=r["net_profit_usd"],
+                            token_address=r.token_address,
+                            buy_dex=r.dex_name,
+                            sell_dex=r.dex_name,
+                            spread_pct=r.gross_spread_pct,
+                            net_profit=r.net_profit_usd,
                             mode=mode,
                         )
                     else:
                         await tg.notify_trade_aborted(
-                            token_address=r["token_address"],
-                            spread_pct=r["spread_pct"],
-                            reason=r["abort_reason"],
+                            token_address=r.token_address,
+                            spread_pct=r.gross_spread_pct,
+                            reason=r.abort_reason,
                         )
             except Exception as e:
                 logger.error("Sniper cycle failed: %s", e)
@@ -177,10 +171,10 @@ def get_latest_terminal_logs() -> str:
 threading.Thread(target=start_arbitrage_engine, daemon=True).start()
 
 with gr.Blocks(title="L2 Flea Market Arbitrage Terminal") as demo:
-    gr.Markdown("# L2 Flea Market Arbitrage System Monitor")
+    gr.Markdown("# L2 Flea Market Triangular Arbitrage System")
     gr.Markdown(
-        "Monitoring low-liquidity exotic pairs on Arbitrum One "
-        "via decoupled async multi-agent state graph transitions."
+        "Single-DEX triangular routing (WETH -> EXOTIC -> USDC -> WETH) "
+        "with math-first execution on Arbitrum One."
     )
 
     gpu_hardware_string = zero_gpu_gatekeeper_bypass(1.0)

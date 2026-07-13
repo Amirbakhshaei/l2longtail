@@ -13,7 +13,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = Path("/data/cleared_tokens.db")
+DB_PATH = Path(__file__).resolve().parent.parent / "cleared_tokens.db"
 
 
 @dataclass

@@ -1,40 +1,20 @@
 """
-Local price calculation from reserves.
+Single-DEX Triangular Arbitrage Math Engine.
 
-Eliminates getAmountsOut() RPC calls by computing prices locally.
-V2: constant product formula x * y = k
-V3: concentrated liquidity math using slot0 and liquidity
+Implements WETH -> EXOTIC -> USDC -> WETH constant product routing
+on a single originating DEX. No cross-DEX spatial arbitrage.
+
+All math is local x*y=k with 0.3% LP fee per hop.
 """
 from __future__ import annotations
 
 import logging
-import math
 from dataclasses import dataclass
 
 logger = logging.getLogger(__name__)
 
 V2_FEE = 0.997
-
-
-@dataclass
-class LocalQuote:
-    dex_name: str
-    pair_address: str
-    amount_out: float
-    price_per_token: float
-    reserve_in: int
-    reserve_out: int
-
-
-@dataclass
-class V3Quote:
-    dex_name: str
-    pool_address: str
-    amount_out: float
-    price_per_token: float
-    sqrt_price_x96: int
-    liquidity: int
-    tick: int
+LP_FEE_BPS = 30
 
 
 def compute_v2_output(
@@ -45,11 +25,9 @@ def compute_v2_output(
 ) -> int:
     if reserve_in == 0 or reserve_out == 0 or amount_in == 0:
         return 0
-
     amount_in_with_fee = int(amount_in * fee)
     numerator = amount_in_with_fee * reserve_out
     denominator = reserve_in + amount_in_with_fee
-
     return numerator // denominator
 
 
@@ -61,83 +39,18 @@ def compute_v2_price(
 ) -> float:
     if reserve_in == 0:
         return 0.0
-
     adjusted_in = reserve_in / (10 ** decimals_in)
     adjusted_out = reserve_out / (10 ** decimals_out)
-
     return adjusted_out / adjusted_in
-
-
-def compute_v2_spread(
-    reserve_a_buy: int,
-    reserve_b_buy: int,
-    reserve_a_sell: int,
-    reserve_b_sell: int,
-    amount_in_wei: int = 10**18,
-) -> float:
-    out_buy = compute_v2_output(reserve_a_buy, reserve_b_buy, amount_in_wei)
-    out_sell = compute_v2_output(reserve_b_sell, reserve_a_sell, out_buy)
-
-    if out_buy == 0:
-        return 0.0
-
-    spread = (out_sell - amount_in_wei) / amount_in_wei
-    return spread * 100
-
-
-@dataclass
-class V3PoolState:
-    sqrt_price_x96: int
-    liquidity: int
-    tick: int
-    fee: int
-
-
-def compute_v3_output(
-    pool: V3PoolState,
-    amount_in: int,
-    zero_for_one: bool,
-) -> int:
-    if pool.liquidity == 0 or pool.sqrt_price_x96 == 0:
-        return 0
-
-    fee_divisor = 1000000
-    amount_in_after_fee = amount_in * (fee_divisor - pool.fee) // fee_divisor
-
-    sqrt_price = pool.sqrt_price_x96 / (2**96)
-
-    if zero_for_one:
-        amount_out = (
-            amount_in_after_fee * pool.liquidity * sqrt_price
-        ) // (pool.sqrt_price_x96 + (amount_in_after_fee << 96) // pool.liquidity)
-    else:
-        amount_out = (
-            amount_in_after_fee * pool.liquidity
-        ) // (pool.sqrt_price_x96 + (amount_in_after_fee << 96) // pool.liquidity)
-
-    return amount_out
-
-
-def tick_to_sqrt_price(tick: int) -> float:
-    return 1.0001 ** (tick / 2)
-
-
-def sqrt_price_to_tick(sqrt_price_x96: int) -> int:
-    sqrt_price = sqrt_price_x96 / (2**96)
-    return int(math.log(sqrt_price, math.sqrt(1.0001)))
-
-
-def price_to_sqrt_price_x96(price: float) -> int:
-    sqrt_price = math.sqrt(price)
-    return int(sqrt_price * (2**96))
 
 
 @dataclass
 class PoolInfo:
-    """Reserve data with explicit WETH token position mapping."""
+    """Reserve data with explicit token position mapping."""
 
     weth_is_r0: bool
     reserves: tuple[int, int]
+    pair_address: str = ""
 
     @property
     def weth_reserve(self) -> int:
@@ -149,92 +62,182 @@ class PoolInfo:
 
 
 @dataclass
-class LocalArbitrageOpportunity:
+class QuotePoolInfo:
+    """Pool info for a quote token (USDC/USDT) paired with the exotic."""
+
+    quote_is_r0: bool
+    reserves: tuple[int, int]
+    pair_address: str = ""
+    quote_symbol: str = ""
+
+    @property
+    def quote_reserve(self) -> int:
+        return self.reserves[0] if self.quote_is_r0 else self.reserves[1]
+
+    @property
+    def exotic_reserve(self) -> int:
+        return self.reserves[1] if self.quote_is_r0 else self.reserves[0]
+
+
+@dataclass
+class TriangularPath:
+    """Result of a single-DEX triangular arbitrage calculation."""
+
     token_address: str
     token_symbol: str
-    buy_dex: str
-    buy_pair: str
-    sell_dex: str
-    sell_pair: str
-    buy_price: float
-    sell_price: float
-    spread_pct: float
-    buy_reserves: tuple[int, int]
-    sell_reserves: tuple[int, int]
+    dex_name: str
+
+    weth_to_exotic_pool: str
+    exotic_to_quote_pool: str
+    quote_to_weth_pool: str
+
+    input_weth_wei: int
+    output_weth_wei: int
+    gross_profit_wei: int
+
+    input_weth_eth: float
+    output_weth_eth: float
+    gross_profit_eth: float
+    gross_spread_pct: float
+
+    exotic_amount_wei: int
+    quote_amount_raw: int
+
+    quote_symbol: str
+    quote_to_weth_pair: str
 
 
-def find_local_spreads(
+def find_triangular_path(
     token_address: str,
     token_symbol: str,
-    pools: dict[str, PoolInfo],
-    min_spread_pct: float = 1.0,
-) -> list[LocalArbitrageOpportunity]:
-    """Detect cross-DEX arbitrage spreads using dynamic WETH token position mapping."""
-    dex_names = list(pools.keys())
-    opportunities: list[LocalArbitrageOpportunity] = []
+    dex_name: str,
+    weth_pool: PoolInfo,
+    quote_pools: dict[str, QuotePoolInfo],
+    weth_usdc_pool: PoolInfo | None = None,
+    input_weth_wei: int = 10**18,
+) -> list[TriangularPath]:
+    """
+    Calculate single-DEX triangular arbitrage: WETH -> EXOTIC -> QUOTE -> WETH.
 
-    for i in range(len(dex_names)):
-        for j in range(len(dex_names)):
-            if i == j:
-                continue
+    All three hops must occur on the SAME originating DEX.
 
-            buy_dex = dex_names[i]
-            sell_dex = dex_names[j]
+    Args:
+        token_address: The exotic token address.
+        token_symbol: Human-readable symbol.
+        dex_name: The originating DEX (e.g., "uniswap_v2").
+        weth_pool: The EXOTIC/WETH pool on this DEX.
+        quote_pools: Dict of quote symbol -> QuotePoolInfo for EXOTIC/USDC, EXOTIC/USDT on this DEX.
+        weth_usdc_pool: The WETH/USDC pool on this DEX for the final hop.
+        input_weth_wei: Trade size in WETH wei (default 1 ETH = $10 notional).
 
-            buy_pool = pools[buy_dex]
-            sell_pool = pools[sell_dex]
+    Returns:
+        List of profitable paths sorted by spread descending.
+    """
+    if not quote_pools:
+        return []
 
-            amount_in = 10**18
+    paths: list[TriangularPath] = []
 
-            buy_amount_out = compute_v2_output(
-                reserve_in=buy_pool.weth_reserve,
-                reserve_out=buy_pool.exotic_reserve,
-                amount_in=amount_in,
+    for quote_sym, quote_pool in quote_pools.items():
+        exotic_amount = compute_v2_output(
+            reserve_in=weth_pool.weth_reserve,
+            reserve_out=weth_pool.exotic_reserve,
+            amount_in=input_weth_wei,
+        )
+        if exotic_amount == 0:
+            continue
+
+        quote_amount = compute_v2_output(
+            reserve_in=quote_pool.exotic_reserve,
+            reserve_out=quote_pool.quote_reserve,
+            amount_in=exotic_amount,
+        )
+        if quote_amount == 0:
+            continue
+
+        if weth_usdc_pool is None:
+            continue
+
+        if weth_usdc_pool.weth_is_r0:
+            final_weth_reserve = weth_usdc_pool.weth_reserve
+            final_usdc_reserve = weth_usdc_pool.exotic_reserve
+        else:
+            final_weth_reserve = weth_usdc_pool.exotic_reserve
+            final_usdc_reserve = weth_usdc_pool.weth_reserve
+
+        output_weth = compute_v2_output(
+            reserve_in=final_usdc_reserve,
+            reserve_out=final_weth_reserve,
+            amount_in=quote_amount,
+        )
+        if output_weth == 0:
+            continue
+
+        gross_profit_wei = output_weth - input_weth_wei
+        gross_spread_pct = (gross_profit_wei / input_weth_wei) * 100
+
+        input_eth = input_weth_wei / 1e18
+        output_eth = output_weth / 1e18
+        profit_eth = gross_profit_wei / 1e18
+
+        paths.append(
+            TriangularPath(
+                token_address=token_address,
+                token_symbol=token_symbol,
+                dex_name=dex_name,
+                weth_to_exotic_pool=weth_pool.pair_address,
+                exotic_to_quote_pool=quote_pool.pair_address,
+                quote_to_weth_pool=weth_usdc_pool.pair_address,
+                input_weth_wei=input_weth_wei,
+                output_weth_wei=output_weth,
+                gross_profit_wei=gross_profit_wei,
+                input_weth_eth=input_eth,
+                output_weth_eth=output_eth,
+                gross_profit_eth=profit_eth,
+                gross_spread_pct=gross_spread_pct,
+                exotic_amount_wei=exotic_amount,
+                quote_amount_raw=quote_amount,
+                quote_symbol=quote_sym,
+                quote_to_weth_pair=weth_usdc_pool.pair_address,
             )
+        )
 
-            if buy_amount_out == 0:
-                continue
+    return sorted(paths, key=lambda p: p.gross_spread_pct, reverse=True)
 
-            sell_amount_out = compute_v2_output(
-                reserve_in=sell_pool.exotic_reserve,
-                reserve_out=sell_pool.weth_reserve,
-                amount_in=buy_amount_out,
-            )
 
-            if sell_amount_out == 0:
-                continue
+@dataclass
+class ExecutionState:
+    """State object for the execution pipeline."""
 
-            spread_pct = ((sell_amount_out - amount_in) / amount_in) * 100
+    trade_id: str
+    token_address: str
+    token_symbol: str
+    dex_name: str
 
-            buy_price = (
-                buy_pool.weth_reserve / buy_pool.exotic_reserve
-                if buy_pool.exotic_reserve > 0
-                else 0
-            )
-            sell_price = (
-                sell_pool.weth_reserve / sell_pool.exotic_reserve
-                if sell_pool.exotic_reserve > 0
-                else 0
-            )
+    weth_to_exotic_pool: str
+    exotic_to_quote_pool: str
+    quote_to_weth_pool: str
 
-            if spread_pct >= min_spread_pct:
-                opportunities.append(
-                    LocalArbitrageOpportunity(
-                        token_address=token_address,
-                        token_symbol=token_symbol,
-                        buy_dex=buy_dex,
-                        buy_pair=f"{buy_dex}_pool",
-                        sell_dex=sell_dex,
-                        sell_pair=f"{sell_dex}_pool",
-                        buy_price=buy_price,
-                        sell_price=sell_price,
-                        spread_pct=spread_pct,
-                        buy_reserves=buy_pool.reserves,
-                        sell_reserves=sell_pool.reserves,
-                    )
-                )
+    input_weth_wei: int
+    output_weth_wei: int
+    gross_spread_pct: float
+    trade_size_usd: float
+    gas_overhead_usd: float
+    net_profit_usd: float
 
-    return sorted(opportunities, key=lambda x: x.spread_pct, reverse=True)
+    eth_call_success: bool = False
+    eth_call_revert_reason: str = ""
+
+    audit_is_safe: bool = False
+    audit_threats: list[str] | None = None
+
+    status: str = "PENDING"
+    abort_reason: str = ""
+    tx_hash: str = ""
+
+    quote_symbol: str = ""
+    exotic_amount_wei: int = 0
+    quote_amount_raw: int = 0
 
 
 def compute_net_profit(

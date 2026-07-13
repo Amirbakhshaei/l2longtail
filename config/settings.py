@@ -22,12 +22,12 @@ class Settings(BaseSettings):
     keystore_path: str = "./keystore.json"
     keystore_passphrase: str = ""
 
-    min_liquidity_usd: float = 500.0
+    min_liquidity_usd: float = 100.0
     max_liquidity_usd: float = 100000.0
     min_spread_pct: float = 1.0
     min_net_profit_usd: float = 0.50
     gas_baseline_usd: float = 0.02
-    max_trade_size_usd: float = 200.0
+    max_trade_size_usd: float = 10.0
 
     dexscreener_rate_limit: float = 3.0
     scanner_scan_interval: int = 30
@@ -35,7 +35,7 @@ class Settings(BaseSettings):
     max_concurrent_graphs: int = 5
     rpc_rate_limit_per_sec: int = 10
     cache_ttl_hours: int = 24
-    db_path: str = "/data/longtail.db"
+    db_path: str = "longtail.db"
 
     telegram_bot_token: str = ""
     telegram_chat_id: str = ""

@@ -11,14 +11,12 @@ from db.cache import ContractCache
 from db.cleared_tokens import ClearedTokensDB
 from infra.flea_market_discovery import FleaMarketDiscovery
 from infra.keystore import Keystore
-from infra.pool_fetcher import PoolFetcher
 from infra.rate_limiter import TokenBucketRateLimiter
 from infra.rpc_manager import RPCManager
-from infra.source_fetcher import SourceFetcher
 from monitoring.alerts import TelegramAlerts
 from monitoring.logger import setup_logger
 from monitoring.metrics import start_metrics_server
-from process_a_indexer import LLMSecurityAuditor, ProcessAIndexer
+from process_a_indexer import ProcessAIndexer
 from process_b_sniper import ProcessBSniper
 
 logger = logging.getLogger(__name__)
@@ -33,13 +31,14 @@ def _handle_signal(signum: int, frame: object) -> None:
     _shutdown = True
 
 
-def write_results_to_csv(results: list[dict], file_path: Path) -> None:
+def write_results_to_csv(results: list, file_path: Path) -> None:
     if not results:
         return
 
     fieldnames = [
-        "trade_id", "token_address", "buy_pool", "sell_pool",
-        "spread_pct", "trade_size_usd", "exact_output_usd",
+        "trade_id", "token_address", "dex_name",
+        "weth_to_exotic_pool", "exotic_to_quote_pool", "quote_to_weth_pool",
+        "gross_spread_pct", "trade_size_usd",
         "gas_overhead_usd", "net_profit_usd", "status", "abort_reason",
     ]
 
@@ -60,7 +59,7 @@ async def main() -> None:
     setup_logger(settings.log_level)
 
     mode = "LIVE" if not settings.dry_run else "PAPER"
-    logger.info("Starting Long-Tail Arbitrage Engine (%s MODE)", mode)
+    logger.info("Starting Triangular Arbitrage Engine (%s MODE)", mode)
     logger.info("  RPC Primary:  %s", settings.ankr_rpc_url[:40] + "...")
     logger.info("  RPC Fallback: %s", settings.fallback_rpc_url)
     logger.info("  LLM Model:    %s", settings.llm_model_primary)
@@ -96,27 +95,23 @@ async def main() -> None:
     signal.signal(signal.SIGTERM, _handle_signal)
 
     cleared_db = ClearedTokensDB()
-    source_fetcher = SourceFetcher()
-    pool_fetcher = PoolFetcher(rpc_manager)
     flea = FleaMarketDiscovery(rpc_manager, cache)
-    llm_auditor = LLMSecurityAuditor(settings.llm_api_key, settings.llm_model_primary)
 
     process_a = ProcessAIndexer(
         rpc_manager=rpc_manager,
-        source_fetcher=source_fetcher,
         cleared_db=cleared_db,
-        llm_auditor=llm_auditor,
         flea_discovery=flea,
     )
 
     process_b = ProcessBSniper(
         cleared_db=cleared_db,
-        pool_fetcher=pool_fetcher,
         rpc_manager=rpc_manager,
         trade_size_usd=settings.max_trade_size_usd,
         gas_usd=settings.gas_baseline_usd,
         min_spread_pct=settings.min_spread_pct,
         dry_run=settings.dry_run,
+        llm_api_key=settings.llm_api_key,
+        llm_model=settings.llm_model_primary,
     )
 
     logger.info("Engine ready. Starting Process A (Indexer) + Process B (Sniper)...")
@@ -146,8 +141,8 @@ async def main() -> None:
 
     elapsed = time.monotonic() - start_time
     results = process_b.get_results()
-    executed = [r for r in results if r["status"] == "EXECUTED"]
-    aborted = [r for r in results if r["status"] == "ABORTED"]
+    executed = [r for r in results if r.status == "EXECUTED"]
+    aborted = [r for r in results if r.status == "ABORTED"]
 
     logger.info(
         "SESSION COMPLETE | duration=%.0fs executed=%d aborted=%d cleared=%d",
@@ -158,17 +153,18 @@ async def main() -> None:
         csv_results = []
         for r in results:
             csv_results.append({
-                "trade_id": r["trade_id"],
-                "token_address": r["token_address"],
-                "buy_pool": r["buy_pool"],
-                "sell_pool": r["sell_pool"],
-                "spread_pct": f"{r['spread_pct']:.2f}",
-                "trade_size_usd": f"{r['trade_size_usd']:.2f}",
-                "exact_output_usd": f"{r['exact_output_usd']:.4f}",
-                "gas_overhead_usd": f"{r['gas_overhead_usd']:.4f}",
-                "net_profit_usd": f"{r['net_profit_usd']:.4f}",
-                "status": r["status"],
-                "abort_reason": r["abort_reason"],
+                "trade_id": r.trade_id,
+                "token_address": r.token_address,
+                "dex_name": r.dex_name,
+                "weth_to_exotic_pool": r.weth_to_exotic_pool,
+                "exotic_to_quote_pool": r.exotic_to_quote_pool,
+                "quote_to_weth_pool": r.quote_to_weth_pool,
+                "gross_spread_pct": f"{r.gross_spread_pct:.2f}",
+                "trade_size_usd": f"{r.trade_size_usd:.2f}",
+                "gas_overhead_usd": f"{r.gas_overhead_usd:.4f}",
+                "net_profit_usd": f"{r.net_profit_usd:.4f}",
+                "status": r.status,
+                "abort_reason": r.abort_reason,
             })
         write_results_to_csv(csv_results, CSV_FILE)
         logger.info("Results written to %s", CSV_FILE)
