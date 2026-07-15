@@ -9,12 +9,14 @@ All math is local x*y=k with 0.3% LP fee per hop.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+import math
+from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
 
 V2_FEE = 0.997
 LP_FEE_BPS = 30
+INF = float("inf")
 
 
 def get_amount_out(amount_in: int, reserve_in: int, reserve_out: int, fee_tier: int = 3) -> int:
@@ -297,3 +299,265 @@ def compute_net_profit(
     gross_profit = (spread_pct / 100) * trade_size_usd
     net_profit = gross_profit - gas_usd
     return net_profit, net_profit >= min_profit_usd
+
+
+# ===========================================================================
+# Phase 2 + 3: N-Hop Graph Routing (Bellman-Ford) & Optimal Input Sizing
+# ===========================================================================
+
+
+@dataclass
+class PoolEdge:
+    """A bidirectional liquidity edge between two tokens (one V2 pool)."""
+
+    pair_address: str
+    token0: str
+    token1: str
+    dex: str
+    reserve0: int = 0
+    reserve1: int = 0
+
+    def reserves_from(self, from_token: str) -> tuple[int, int]:
+        """Return (reserve_in, reserve_out) when swapping from_token -> other."""
+        if from_token.lower() == self.token0.lower():
+            return self.reserve0, self.reserve1
+        return self.reserve1, self.reserve0
+
+
+@dataclass
+class ArbCycle:
+    """A negative-weight cycle (arbitrage loop) discovered by Bellman-Ford."""
+
+    tokens: list[str]  # length k+1, tokens[0] == tokens[-1]
+    pools: list[str]   # length k, pools[i] connects tokens[i] -> tokens[i+1]
+    dexes: list[str]   # length k, dex venue per hop
+
+    @property
+    def hop_count(self) -> int:
+        return len(self.pools)
+
+    def directed_hops(self, graph: "DirectedGraph") -> list[tuple[int, int]]:
+        """Reserve tuples (reserve_in, reserve_out) for each hop in order."""
+        hops: list[tuple[int, int]] = []
+        for i, pool in enumerate(self.pools):
+            edge = graph.edges[pool]
+            hops.append(edge.reserves_from(self.tokens[i]))
+        return hops
+
+
+class DirectedGraph:
+    """
+    Token graph over whitelisted V2 pools.
+
+    Nodes = tokens. Edges = pools (bidirectional). Edge weights are
+    ``-log(rate_after_0.3%_fee)`` where rate is the spot output-per-input of
+    the constant-product curve. A negative-weight cycle therefore implies a
+    profitable arbitrage loop whose product of execution rates exceeds 1.
+
+    On every Sync event, ``update_reserves`` mutates the affected edge, which
+    immediately changes the weights used by the next ``find_arbitrage_cycle``.
+    """
+
+    def __init__(self, pools: list[PoolEdge] | None = None) -> None:
+        self.nodes: set[str] = set()
+        self.edges: dict[str, PoolEdge] = {}
+        self.adj: dict[str, list[str]] = {}
+        if pools:
+            for p in pools:
+                self.add_pool(p)
+
+    def add_pool(self, pool: PoolEdge) -> None:
+        self.edges[pool.pair_address.lower()] = pool
+        self.nodes.add(pool.token0)
+        self.nodes.add(pool.token1)
+        self.adj.setdefault(pool.token0, []).append(pool.pair_address.lower())
+        self.adj.setdefault(pool.token1, []).append(pool.pair_address.lower())
+
+    def update_reserves(
+        self, pair_address: str, reserve0: int, reserve1: int
+    ) -> None:
+        edge = self.edges.get(pair_address.lower())
+        if edge is None:
+            return
+        edge.reserve0 = reserve0
+        edge.reserve1 = reserve1
+
+    def _weight(self, edge_key: str, from_token: str) -> float:
+        edge = self.edges[edge_key]
+        reserve_in, reserve_out = edge.reserves_from(from_token)
+        if reserve_in == 0 or reserve_out == 0:
+            return INF
+        rate = (reserve_out * V2_FEE) / reserve_in
+        if rate <= 0:
+            return INF
+        return -math.log(rate)
+
+    def find_arbitrage_cycle(self, start_token: str) -> ArbCycle | None:
+        """
+        Bellman-Ford from ``start_token``. Detect a negative-weight cycle and
+        reconstruct the exact token/pool path. Returns None if no cycle exists.
+        """
+        if start_token not in self.nodes:
+            return None
+
+        nodes = sorted(self.nodes)
+        idx = {n: i for i, n in enumerate(nodes)}
+        N = len(nodes)
+        start = idx[start_token]
+
+        dist = [INF] * N
+        pred: list[int | None] = [None] * N
+        pred_edge: list[str | None] = [None] * N
+        dist[start] = 0.0
+
+        def relax_all() -> bool:
+            changed = False
+            for key, edge in self.edges.items():
+                # direction token0 -> token1
+                u, v = idx[edge.token0], idx[edge.token1]
+                w = self._weight(key, edge.token0)
+                if dist[u] + w < dist[v] - 1e-15:
+                    dist[v] = dist[u] + w
+                    pred[v] = u
+                    pred_edge[v] = key
+                    changed = True
+                # direction token1 -> token0
+                u2, v2 = v, u
+                w2 = self._weight(key, edge.token1)
+                if dist[u2] + w2 < dist[v2] - 1e-15:
+                    dist[v2] = dist[u2] + w2
+                    pred[v2] = u2
+                    pred_edge[v2] = key
+                    changed = True
+            return changed
+
+        for _ in range(N - 1):
+            if not relax_all():
+                break
+
+        # Nth pass: locate a node still relaxable => on a negative cycle
+        cycle_node: int | None = None
+        for key, edge in self.edges.items():
+            u, v = idx[edge.token0], idx[edge.token1]
+            if dist[u] + self._weight(key, edge.token0) < dist[v] - 1e-15:
+                cycle_node = v
+                break
+            if dist[v] + self._weight(key, edge.token1) < dist[u] - 1e-15:
+                cycle_node = u
+                break
+        if cycle_node is None:
+            return None
+
+        # Walk pred N times to land inside the cycle
+        x = cycle_node
+        for _ in range(N):
+            x = pred[x]  # type: ignore[assignment]
+
+        # Reconstruct the cycle (list of edges along pred)
+        cur = x
+        path_tokens: list[str] = [nodes[cur]]
+        path_pools: list[str] = []
+        guard = 0
+        while guard <= N:
+            e = pred_edge[cur]
+            prev = pred[cur]
+            if e is None or prev is None:
+                break
+            path_pools.append(e)
+            path_tokens.append(nodes[prev])
+            cur = prev
+            guard += 1
+            if cur == x:
+                break
+        path_tokens.reverse()
+        path_pools.reverse()
+
+        if len(path_pools) < 2:
+            return None
+
+        dexes = [self.edges[p].dex for p in path_pools]
+
+        cycle = ArbCycle(tokens=path_tokens, pools=path_pools, dexes=dexes)
+
+        # Rotate so the loop begins (and ends) at the requested start token.
+        # Required because the flashloan borrows/lends this asset.
+        return self._rotate_to_start(cycle, start_token)
+
+    def _rotate_to_start(self, cycle: ArbCycle, start_token: str) -> ArbCycle:
+        start_lower = start_token.lower()
+        if cycle.tokens[0].lower() == start_lower:
+            return cycle
+        try:
+            idx = next(
+                i
+                for i, t in enumerate(cycle.tokens)
+                if t.lower() == start_lower
+            )
+        except StopIteration:
+            return cycle
+        tokens = cycle.tokens[idx:-1] + cycle.tokens[: idx + 1]
+        pools = cycle.pools[idx:] + cycle.pools[:idx]
+        dexes = cycle.dexes[idx:] + cycle.dexes[:idx]
+        return ArbCycle(tokens=tokens, pools=pools, dexes=dexes)
+
+
+def get_amount_out_multi_hop(
+    directed_hops: list[tuple[int, int]],
+    amount_in: int,
+) -> int:
+    """
+    Chain constant-product swaps across an ordered list of (reserve_in,
+    reserve_out) tuples. Applies the 0.3% V2 fee per hop. Returns the final
+    output amount (0 if any hop fails).
+    """
+    out = amount_in
+    for reserve_in, reserve_out in directed_hops:
+        out = get_amount_out(out, reserve_in, reserve_out)
+        if out == 0:
+            return 0
+    return out
+
+
+def calculate_optimal_input_size(
+    directed_hops: list[tuple[int, int]],
+    gas_cost_wei: int,
+    max_input_wei: int,
+    iterations: int = 100,
+) -> int:
+    """
+    Ternary search for the exact ``amount_in`` that maximises net profit:
+
+        f(x) = get_amount_out_multi_hop(x) - x - gas_cost_wei
+
+    The objective is unimodal (concave) on x*y=k curves, so ternary search
+    converges to the local maximum. Bounds are [1 wei, max_input_wei].
+
+    Returns the optimal ``amount_in`` in wei, or 0 if max profit <= 0.
+    """
+
+    def objective(x: int) -> int:
+        return get_amount_out_multi_hop(directed_hops, x) - x - gas_cost_wei
+
+    lo, hi = 1, max(max_input_wei, 1)
+    for _ in range(iterations):
+        if hi - lo <= 3:
+            break
+        m1 = lo + (hi - lo) // 3
+        m2 = hi - (hi - lo) // 3
+        if objective(m1) < objective(m2):
+            lo = m1
+        else:
+            hi = m2
+
+    # Evaluate the narrowed window and pick the global maximum
+    best_x = lo
+    best_f = objective(lo)
+    for x in range(lo + 1, hi + 1):
+        f = objective(x)
+        if f > best_f:
+            best_f = f
+            best_x = x
+
+    if best_f <= 0:
+        return 0
+    return best_x

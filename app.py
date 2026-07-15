@@ -52,13 +52,17 @@ async def _run_engine() -> None:
     from monitoring.alerts import TelegramAlerts
     from process_a_indexer import ProcessAIndexer
     from process_b_sniper import ProcessBSniper
+    from infra.websocket_listener import WebSocketListener
 
     dry_run = os.getenv("DRY_RUN", "true").lower() == "true"
     trade_size = float(os.getenv("TRADE_SIZE_USD", "10"))
     min_spread = float(os.getenv("MIN_SPREAD_PCT", "0.5"))
-    scan_interval_a = float(os.getenv("SCAN_INTERVAL_A", "2"))
-    scan_interval_b = float(os.getenv("SCAN_INTERVAL_B", "1"))
     lookback = int(os.getenv("SYNC_LOOKBACK_BLOCKS", "50"))
+    wss_url = os.getenv("WSS_RPC_URL", "wss://arb1.arbitrum.io/ws")
+    vault_address = os.getenv(
+        "BALANCER_VAULT_ADDRESS", "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
+    )
+    executor_address = os.getenv("FLASHLOAN_EXECUTOR_ADDRESS", "")
 
     ankr_key = os.getenv("ANKR_API_KEY", "")
     primary_url = (
@@ -85,11 +89,15 @@ async def _run_engine() -> None:
     llm_key = os.getenv("LLM_API_KEY", "")
     llm_model = os.getenv("LLM_MODEL_PRIMARY", "llama-3.3-70b-versatile")
 
+    sync_queue: asyncio.Queue = asyncio.Queue()
+    ws_listener = WebSocketListener(wss_url, flea.whitelisted_addresses)
+
     process_a = ProcessAIndexer(
         rpc_manager=rpc,
         cleared_db=cleared_db,
+        websocket_listener=ws_listener,
+        sync_queue=sync_queue,
         flea_discovery=flea,
-        lookback_blocks=lookback,
     )
 
     process_b = ProcessBSniper(
@@ -102,6 +110,10 @@ async def _run_engine() -> None:
         llm_api_key=llm_key,
         llm_model=llm_model,
         on_opportunity=tg.notify_opportunity,
+        sync_queue=sync_queue,
+        vault_address=vault_address,
+        executor_address=executor_address,
+        graph_mode=True,
     )
 
     mode = "LIVE" if not dry_run else "PAPER"
@@ -112,41 +124,18 @@ async def _run_engine() -> None:
     await tg.notify_engine_start(mode, trade_size, min_spread)
 
     async def loop_a() -> None:
-        while True:
-            try:
-                await process_a._scan_cycle()
-            except Exception as e:
-                logger.error("Sync engine cycle failed: %s", e)
-                await tg.notify_error("Process A", str(e))
-            await asyncio.sleep(scan_interval_a)
+        try:
+            await process_a.run()
+        except Exception as e:
+            logger.error("Sync engine failed: %s", e)
+            await tg.notify_error("Process A", str(e))
 
     async def loop_b() -> None:
-        while True:
-            try:
-                old_count = len(process_b.get_results())
-                await process_b._scan_cycle()
-                new_results = process_b.get_results()[old_count:]
-
-                for r in new_results:
-                    if r.status == "EXECUTED":
-                        await tg.notify_trade_executed(
-                            token_address=r.token_address,
-                            buy_dex=r.dex_name,
-                            sell_dex=r.dex_name,
-                            spread_pct=r.gross_spread_pct,
-                            net_profit=r.net_profit_usd,
-                            mode=mode,
-                        )
-                    else:
-                        await tg.notify_trade_aborted(
-                            token_address=r.token_address,
-                            spread_pct=r.gross_spread_pct,
-                            reason=r.abort_reason,
-                        )
-            except Exception as e:
-                logger.error("Sniper cycle failed: %s", e)
-                await tg.notify_error("Process B", str(e))
-            await asyncio.sleep(scan_interval_b)
+        try:
+            await process_b.run()
+        except Exception as e:
+            logger.error("Sniper failed: %s", e)
+            await tg.notify_error("Process B", str(e))
 
     await asyncio.gather(loop_a(), loop_b())
 

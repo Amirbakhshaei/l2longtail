@@ -11,6 +11,7 @@ from infra.flea_market_discovery import FleaMarketDiscovery
 from infra.keystore import Keystore
 from infra.rate_limiter import TokenBucketRateLimiter
 from infra.rpc_manager import RPCManager
+from infra.websocket_listener import WebSocketListener
 from monitoring.alerts import TelegramAlerts
 from monitoring.logger import setup_logger
 from monitoring.metrics import start_metrics_server
@@ -57,9 +58,10 @@ async def main() -> None:
     setup_logger(settings.log_level)
 
     mode = "LIVE" if not settings.dry_run else "PAPER"
-    logger.info("Starting Triangular Arbitrage Sync Engine (%s MODE)", mode)
+    logger.info("Starting Graph Arbitrage Sync Engine (%s MODE)", mode)
     logger.info("  RPC Primary:  %s", settings.ankr_rpc_url[:40] + "...")
     logger.info("  RPC Fallback: %s", settings.fallback_rpc_url)
+    logger.info("  WSS:          %s", settings.wss_rpc_url)
     logger.info("  LLM Model:    %s", settings.llm_model_primary)
     logger.info("  Trade Size:   $%.0f", settings.max_trade_size_usd)
     logger.info("  Min Spread:   %.1f%%", settings.min_spread_pct)
@@ -92,11 +94,15 @@ async def main() -> None:
     cleared_db = ClearedTokensDB()
     flea = FleaMarketDiscovery(rpc_manager, whitelist_path=settings.whitelist_path)
 
+    sync_queue: asyncio.Queue = asyncio.Queue()
+    ws_listener = WebSocketListener(settings.wss_rpc_url, flea.whitelisted_addresses)
+
     process_a = ProcessAIndexer(
         rpc_manager=rpc_manager,
         cleared_db=cleared_db,
+        websocket_listener=ws_listener,
+        sync_queue=sync_queue,
         flea_discovery=flea,
-        lookback_blocks=settings.sync_lookback_blocks,
     )
 
     process_b = ProcessBSniper(
@@ -108,34 +114,22 @@ async def main() -> None:
         dry_run=settings.dry_run,
         llm_api_key=settings.llm_api_key,
         llm_model=settings.llm_model_primary,
+        sync_queue=sync_queue,
+        vault_address=settings.balancer_vault_address,
+        executor_address=settings.flashloan_executor_address,
+        graph_mode=True,
     )
 
     logger.info(
-        "Engine ready. %d whitelisted pools. Starting Sync Engine + Sniper...",
+        "Engine ready. %d whitelisted pools. Starting WSS Sync Engine + Graph Sniper...",
         flea.pool_count,
     )
-
-    async def run_process_a() -> None:
-        while not _shutdown:
-            try:
-                await process_a._scan_cycle()
-            except Exception as e:
-                logger.error("Sync engine cycle failed: %s", e)
-            await asyncio.sleep(2.0)
-
-    async def run_process_b() -> None:
-        while not _shutdown:
-            try:
-                await process_b._scan_cycle()
-            except Exception as e:
-                logger.error("Sniper cycle failed: %s", e)
-            await asyncio.sleep(1.0)
 
     start_time = time.monotonic()
 
     await asyncio.gather(
-        run_process_a(),
-        run_process_b(),
+        process_a.run(),
+        process_b.run(),
     )
 
     elapsed = time.monotonic() - start_time

@@ -244,6 +244,55 @@ class LiveExecutor:
                 error=str(e),
             )
 
+    async def execute_calldata(
+        self, to_address: str, data: str, value: int = 0
+    ) -> TransactionResult:
+        """Sign and broadcast an arbitrary contract call (e.g. flashloan exec)."""
+        if self.dry_run:
+            logger.info("DRY RUN: calldata -> %s", to_address[:10])
+            return TransactionResult(tx_hash="0x" + "0" * 64, status="SUBMITTED")
+
+        if not self.account:
+            return TransactionResult(
+                tx_hash="", status="FAILED", error="No private key configured"
+            )
+
+        try:
+            to = Web3.to_checksum_address(to_address)
+            nonce = self.w3.eth.get_transaction_count(self.account.address)
+            gas_price = self.w3.eth.gas_price
+            max_fee = int(gas_price * 1.5)
+            max_priority = self.w3.eth.max_priority_fee
+
+            tx = {
+                "from": self.account.address,
+                "to": to,
+                "value": value,
+                "gas": 600000,
+                "maxFeePerGas": max_fee,
+                "maxPriorityFeePerGas": max_priority,
+                "nonce": nonce,
+                "chainId": 42161,
+                "data": bytes.fromhex(data[2:]),
+                "type": 2,
+            }
+
+            signed_tx = self.account.sign_transaction(tx)
+            raw = signed_tx.raw_transaction
+
+            if self.bundle_relay_url:
+                return await self.send_private_transaction(raw)
+
+            tx_hash = self.w3.eth.send_raw_transaction(raw)
+            logger.info("TX submitted: %s", tx_hash.hex())
+            return TransactionResult(tx_hash=tx_hash.hex(), status="SUBMITTED")
+
+        except Exception as e:
+            logger.error("Calldata execution failed: %s", e)
+            return TransactionResult(
+                tx_hash="", status="FAILED", error=str(e)
+            )
+
     def get_nonce(self) -> int:
         if not self.account:
             return 0

@@ -20,6 +20,7 @@ from db.cleared_tokens import ClearedTokensDB
 from infra.flea_market_discovery import FleaMarketDiscovery
 from infra.rate_limiter import TokenBucketRateLimiter
 from infra.rpc_manager import RPCManager
+from infra.websocket_listener import WebSocketListener
 from monitoring.alerts import TelegramAlerts
 from process_a_indexer import ProcessAIndexer
 from process_b_sniper import ProcessBSniper
@@ -79,6 +80,11 @@ async def main() -> None:
         else "https://rpc.ankr.com/arbitrum"
     )
     fallback_url = "https://arb1.arbitrum.io/rpc"
+    wss_url = os.getenv("WSS_RPC_URL", "wss://arb1.arbitrum.io/ws")
+    vault_address = os.getenv(
+        "BALANCER_VAULT_ADDRESS", "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
+    )
+    executor_address = os.getenv("FLASHLOAN_EXECUTOR_ADDRESS", "")
 
     rate_limiter = TokenBucketRateLimiter(rate=10, capacity=5)
     rpc = RPCManager(primary_url, fallback_url, "", rate_limiter)
@@ -95,21 +101,28 @@ async def main() -> None:
         os.getenv("TELEGRAM_CHAT_ID", ""),
     )
 
-    print("\nTRIANGULAR ARBITRAGE SYSTEM (SYNC ENGINE)")
+    sync_queue: asyncio.Queue = asyncio.Queue()
+
+    ws_listener = WebSocketListener(wss_url, flea.whitelisted_addresses)
+
+    print("\nGRAPH ARBITRAGE SYSTEM (WSS SYNC ENGINE)")
     print(f"  Mode:        {'PAPER' if dry_run else 'LIVE'}")
     print(f"  Duration:    {duration}s")
     print(f"  Trade size:  ${trade_size:.0f}")
     print(f"  Min spread:  {min_spread:.1f}%")
     print(f"  Pools:       {flea.pool_count}")
-    print(f"  Lookback:    {lookback} blocks")
+    print(f"  WSS:         {wss_url}")
+    print(f"  Vault:       {vault_address}")
+    print(f"  Executor:    {executor_address or 'NOT DEPLOYED'}")
     print(f"  CSV output:  {CSV_FILE}")
     print()
 
     process_a = ProcessAIndexer(
         rpc_manager=rpc,
         cleared_db=cleared_db,
+        websocket_listener=ws_listener,
+        sync_queue=sync_queue,
         flea_discovery=flea,
-        lookback_blocks=lookback,
     )
 
     process_b = ProcessBSniper(
@@ -122,6 +135,10 @@ async def main() -> None:
         llm_api_key=llm_key,
         llm_model=llm_model,
         on_opportunity=tg.notify_opportunity,
+        sync_queue=sync_queue,
+        vault_address=vault_address,
+        executor_address=executor_address,
+        graph_mode=True,
     )
 
     start_time = time.monotonic()
@@ -133,22 +150,11 @@ async def main() -> None:
         "PAPER" if dry_run else "LIVE", trade_size, min_spread
     )
 
-    async def run_process_a():
+    async def flush_notifications():
         while not _shutdown:
             try:
-                await process_a._scan_cycle()
-            except Exception as e:
-                logger.error("Sync engine cycle failed: %s", e)
-            await asyncio.sleep(2.0)
-
-    async def run_process_b():
-        while not _shutdown:
-            try:
-                old_count = len(process_b.get_results())
-                await process_b._scan_cycle()
-                new_results = process_b.get_results()[old_count:]
-
-                for r in new_results:
+                results = process_b.get_results()
+                for r in results:
                     if r.status == "EXECUTED":
                         await tg.notify_trade_executed(
                             token_address=r.token_address,
@@ -164,17 +170,18 @@ async def main() -> None:
                             spread_pct=r.gross_spread_pct,
                             reason=r.abort_reason,
                         )
+                results.clear()
             except Exception as e:
-                logger.error("Sniper cycle failed: %s", e)
-                await tg.notify_error("Process B", str(e))
+                logger.error("Notification flush failed: %s", e)
             await asyncio.sleep(1.0)
 
-    print("Starting Process A (Sync Engine) and Process B (Sniper)...")
+    print("Starting Process A (WSS Sync) and Process B (Graph Sniper)...")
     print()
 
     await asyncio.gather(
-        run_process_a(),
-        run_process_b(),
+        process_a.run(),
+        process_b.run(),
+        flush_notifications(),
     )
 
     results = process_b.get_results()

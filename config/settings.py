@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     ankr_rpc_url: str = ""
     fallback_rpc_url: str = "https://arb1.arbitrum.io/rpc"
     flashbots_rpc_url: str = "https://rpc.flashbots.net/fast"
+    wss_rpc_url: str = "wss://arb1.arbitrum.io/ws"
 
     llm_api_key: str = ""
     llm_base_url: str = "https://api.groq.com/openai/v1"
@@ -31,6 +32,9 @@ class Settings(BaseSettings):
 
     whitelist_path: str = "config/whitelist.json"
     sync_lookback_blocks: int = 50
+
+    flashloan_executor_address: str = ""
+    balancer_vault_address: str = "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
 
     dexscreener_rate_limit: float = 3.0
     scanner_scan_interval: int = 30
