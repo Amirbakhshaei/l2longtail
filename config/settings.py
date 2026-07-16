@@ -58,16 +58,56 @@ class Settings(BaseSettings):
                 if self.ankr_api_key
                 else "https://rpc.ankr.com/arbitrum"
             )
-        # Derive the WebSocket endpoint from the HTTPS RPC when no explicit
-        # WSS URL is configured. Arbitrum public RPC maps:
-        #   https://arb1.arbitrum.io/rpc  ->  wss://arb1.arbitrum.io/ws
-        # Swapping the scheme (https->wss, http->ws) yields the host, then we
-        # append the standard /ws path. This avoids the HTTP 404 that a
-        # mismatched /rpc (or other) suffix on a wss:// URL would cause.
-        if not self.wss_rpc_url and self.fallback_rpc_url:
+        # Normalize / derive the WebSocket endpoint. This runs even when an
+        # explicit WSS URL is supplied, so a malformed value (e.g. a leftover
+        # http(s):// RPC, a doubled scheme like "wss://wss://...", or an Ankr
+        # key appended to the wrong base) is corrected instead of crashing the
+        # client with "isn't a valid URI: scheme isn't ws or wss".
+        self.wss_rpc_url = self._normalize_wss_url(
+            self.wss_rpc_url, self.fallback_rpc_url, self.ankr_rpc_url, self.ankr_api_key
+        )
+
+    @staticmethod
+    def _normalize_wss_url(
+        wss: str, fallback_rpc: str, ankr_rpc: str, ankr_key: str
+    ) -> str:
+        """Return a guaranteed ws:// or wss:// URI for the Arbitrum node.
+
+        Priority:
+          1. A valid explicit WSS URL (already ws/wss scheme).
+          2. Derive wss://<host>/ws from the HTTPS fallback RPC (public
+             Arbitrum gateway — universally accepted by websockets clients).
+          3. Derive from the Ankr HTTPS RPC host (NOT the keyed /ws/<key>
+             path, which older websockets clients reject as a malformed URI).
+        Any input is stripped of doubled/incorrect schemes before use.
+        """
+        # 1) Explicit WSS — normalize to wss://<host>/ws. Accepts a bare host,
+        #    an http(s):// RPC, a doubled scheme (wss://https://...), or an
+        #    Arbitrum keyed path (wss://.../ws/<key>); all collapse to a clean
+        #    wss://<host>/ws URI that websockets clients accept.
+        cand = (wss or "").strip()
+        if cand:
+            # Drop any scheme prefixes (handles wss://wss:// and wss://https://).
+            while "://" in cand:
+                cand = cand.split("://", 1)[1]
+            host = cand.split("/")[0]
+            if host:
+                return f"wss://{host}/ws"
+
+        # 2) Derive wss://<host>/ws from the public fallback HTTPS RPC.
+        #    This is the reliable default and avoids the Ankr keyed-path URI
+        #    that some websockets versions reject.
+        base = fallback_rpc or ankr_rpc or ""
+        if base:
             host = (
-                self.fallback_rpc_url.replace("https://", "", 1)
+                base.replace("https://", "", 1)
                 .replace("http://", "", 1)
+                .replace("wss://", "", 1)
+                .replace("ws://", "", 1)
                 .split("/")[0]
             )
-            self.wss_rpc_url = f"wss://{host}/ws"
+            if host:
+                return f"wss://{host}/ws"
+
+        # 3) Last resort: public Arbitrum WS gateway.
+        return "wss://arb1.arbitrum.io/ws"
