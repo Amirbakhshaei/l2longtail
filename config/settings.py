@@ -74,40 +74,44 @@ class Settings(BaseSettings):
         """Return a guaranteed ws:// or wss:// URI for the Arbitrum node.
 
         Priority:
-          1. A valid explicit WSS URL (already ws/wss scheme).
-          2. Derive wss://<host>/ws from the HTTPS fallback RPC (public
-             Arbitrum gateway — universally accepted by websockets clients).
-          3. Derive from the Ankr HTTPS RPC host (NOT the keyed /ws/<key>
-             path, which older websockets clients reject as a malformed URI).
+          1. An explicit WSS_RPC_URL override (normalized).
+          2. Ankr keyed WSS (wss://rpc.ankr.com/arbitrum/ws/<key>) when an API
+             key is present — this is the authenticated endpoint Arbitrum's
+             public gateway (wss://arb1.arbitrum.io/ws) rejects with HTTP 401.
+          3. Derive wss://<host>/ws from the HTTPS fallback RPC host.
         Any input is stripped of doubled/incorrect schemes before use.
         """
-        # 1) Explicit WSS — normalize to wss://<host>/ws. Accepts a bare host,
-        #    an http(s):// RPC, a doubled scheme (wss://https://...), or an
-        #    Arbitrum keyed path (wss://.../ws/<key>); all collapse to a clean
-        #    wss://<host>/ws URI that websockets clients accept.
+        # 1) Explicit WSS override (normalized) — takes precedence.
         cand = (wss or "").strip()
         if cand:
-            # Drop any scheme prefixes (handles wss://wss:// and wss://https://).
-            while "://" in cand:
-                cand = cand.split("://", 1)[1]
-            host = cand.split("/")[0]
-            if host:
-                return f"wss://{host}/ws"
+            norm = Settings._wss_from_host(cand)
+            if norm:
+                return norm
 
-        # 2) Derive wss://<host>/ws from the public fallback HTTPS RPC.
-        #    This is the reliable default and avoids the Ankr keyed-path URI
-        #    that some websockets versions reject.
+        # 2) Ankr keyed WSS — the authenticated endpoint.
+        if ankr_key:
+            return f"wss://rpc.ankr.com/arbitrum/ws/{ankr_key}"
+
+        # 3) Derive wss://<host>/ws from the HTTPS fallback RPC host.
         base = fallback_rpc or ankr_rpc or ""
         if base:
-            host = (
-                base.replace("https://", "", 1)
-                .replace("http://", "", 1)
-                .replace("wss://", "", 1)
-                .replace("ws://", "", 1)
-                .split("/")[0]
-            )
-            if host:
-                return f"wss://{host}/ws"
+            norm = Settings._wss_from_host(base)
+            if norm:
+                return norm
 
-        # 3) Last resort: public Arbitrum WS gateway.
+        # 4) Last resort: public Arbitrum WS gateway (may 401 without auth).
         return "wss://arb1.arbitrum.io/ws"
+
+    @staticmethod
+    def _wss_from_host(value: str) -> str:
+        """Normalize any URL/host to wss://<host>/ws, or '' if not parseable."""
+        cand = (value or "").strip()
+        if not cand:
+            return ""
+        # Drop any scheme prefixes (handles wss://wss:// and wss://https://).
+        while "://" in cand:
+            cand = cand.split("://", 1)[1]
+        host = cand.split("/")[0]
+        if host:
+            return f"wss://{host}/ws"
+        return ""
