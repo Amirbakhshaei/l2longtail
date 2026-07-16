@@ -80,7 +80,16 @@ async def main() -> None:
         else "https://rpc.ankr.com/arbitrum"
     )
     fallback_url = "https://arb1.arbitrum.io/rpc"
-    wss_url = os.getenv("WSS_RPC_URL", "wss://arb1.arbitrum.io/ws")
+    from config.settings import Settings
+
+    settings = Settings()
+    wss_url = settings.wss_rpc_url or (
+        "wss://"
+        + settings.fallback_rpc_url.replace("https://", "", 1)
+        .replace("http://", "", 1)
+        .split("/")[0]
+        + "/ws"
+    )
     vault_address = os.getenv(
         "BALANCER_VAULT_ADDRESS", "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
     )

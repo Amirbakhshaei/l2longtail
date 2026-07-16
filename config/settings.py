@@ -9,7 +9,7 @@ class Settings(BaseSettings):
     ankr_rpc_url: str = ""
     fallback_rpc_url: str = "https://arb1.arbitrum.io/rpc"
     flashbots_rpc_url: str = "https://rpc.flashbots.net/fast"
-    wss_rpc_url: str = "wss://arb1.arbitrum.io/ws"
+    wss_rpc_url: str = ""
 
     llm_api_key: str = ""
     llm_base_url: str = "https://api.groq.com/openai/v1"
@@ -58,3 +58,16 @@ class Settings(BaseSettings):
                 if self.ankr_api_key
                 else "https://rpc.ankr.com/arbitrum"
             )
+        # Derive the WebSocket endpoint from the HTTPS RPC when no explicit
+        # WSS URL is configured. Arbitrum public RPC maps:
+        #   https://arb1.arbitrum.io/rpc  ->  wss://arb1.arbitrum.io/ws
+        # Swapping the scheme (https->wss, http->ws) yields the host, then we
+        # append the standard /ws path. This avoids the HTTP 404 that a
+        # mismatched /rpc (or other) suffix on a wss:// URL would cause.
+        if not self.wss_rpc_url and self.fallback_rpc_url:
+            host = (
+                self.fallback_rpc_url.replace("https://", "", 1)
+                .replace("http://", "", 1)
+                .split("/")[0]
+            )
+            self.wss_rpc_url = f"wss://{host}/ws"
