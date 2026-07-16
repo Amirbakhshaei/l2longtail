@@ -1,13 +1,25 @@
 """
 scripts/seed_whitelist.py
 
-Asynchronously discovers the most active micro-cap liquidity pools on
-Arbitrum, filters them by DEX / liquidity / 24h-volume, and overwrites
-config/whitelist.json with the top 500.
+Top-down discovery of the highest-volume liquidity pools on Arbitrum via
+GeckoTerminal's network-pools pagination endpoint, then writes the top
+TARGET_POOLS pools to config/whitelist.json.
 
-Primary source: DexScreener (`/latest/dex/token-pairs/v1/arbitrum/<tokens>`).
-Fallback source: GeckoTerminal (the in-repo client) — used automatically if
-DexScreener is unreachable / blocklisted (e.g. Cloudflare 403).
+Why top-down?
+    The previous crawler walked every token address individually
+    (GET /networks/arbitrum/tokens/<tok>/pools). That blows through
+    GeckoTerminal's 30 req/min ceiling instantly and triggers 429s. The
+    network-pools endpoint returns 20 pools per page in bulk, so 25 pages
+    (500 pools) costs only 25 requests. At a strict 2.0s sleep between pages
+    we use ~12 req/min — comfortably under the limit, on localhost or VPS.
+
+Endpoint:
+    GET https://api.geckoterminal.com/api/v2/networks/arbitrum/pools?page={n}
+
+Fallback:
+    If GeckoTerminal 429s or errors, fall back to the merge of an existing
+    whitelist (if present) and the curated STATIC_FALLBACK set so the engine
+    always has something to route. The script never crashes.
 
 Run with:
     python -m scripts.seed_whitelist
@@ -24,23 +36,25 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-# DexScreener
-BASE_URL = "https://api.dexscreener.com/latest/dex"
-TOKEN_PAIRS_URL = f"{BASE_URL}/token-pairs/v1/arbitrum"
-
-# GeckoTerminal fallback
+# GeckoTerminal network-pools (top-down, bulk pagination).
 GECKO_URL = "https://api.geckoterminal.com/api/v2"
+GECKO_NETWORK_POOLS = f"{GECKO_URL}/networks/arbitrum/pools"
+
+# DexScreener top-pools fallback (network-wide trending).
+DEXSCREENER_TOP = "https://api.dexscreener.com/latest/dex/pairs/arbitrum"
 
 TARGET_POOLS = int(os.getenv("TARGET_POOLS", "500"))
-MAX_TOKENS_VISITED = int(os.getenv("MAX_TOKENS_VISITED", "400"))
-BATCH_SIZE = 30
+PAGES = int(os.getenv("SEED_PAGES", "25"))          # 25 pages * 20 = 500 pools
+PAGE_SLEEP = 2.0                                     # stay under 30 req/min (~12/min)
+POOLS_PER_PAGE = 20
+
 MIN_LIQUIDITY_USD = 10_000.0
 MIN_VOLUME_24H_USD = 5_000.0
 ALLOWED_DEXES = {"uniswap", "sushiswap", "camelot", "uniswap_v3", "camelot_v3"}
 ALLOWED_CHAINS = {"arbitrum"}
 
-# Map DexScreener/Gecko dexId -> engine router key (config.constants.DEX_ROUTERS).
-# V3 venues carry a fee tier which is recorded separately in the whitelist.
+# Map GeckoTerminal / DexScreener dexId -> engine router key
+# (config.constants.DEX_ROUTERS). V3 venues carry a fee tier recorded separately.
 DEX_NORMALIZE = {
     "uniswap": "uniswap_v2",
     "uniswap-v2": "uniswap_v2",
@@ -51,7 +65,6 @@ DEX_NORMALIZE = {
     "camelot-v2": "camelot_v2",
     "camelot-v3": "camelot_v3",
     "camelot_v3": "camelot_v3",
-    # GeckoTerminal ids
     "uniswap_v2": "uniswap_v2",
     "sushi": "sushiswap",
     "sushiswap_v2": "sushiswap",
@@ -62,28 +75,8 @@ DEFAULT_V3_FEE_BPS = {"uniswap_v3": 3000, "camelot_v3": 3000}
 
 WHITELIST_PATH = Path("config/whitelist.json")
 
-# Initial Arbitrum blue-chip seeds; the crawler BFS-expands from these.
-SEED_TOKENS = [
-    "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",  # WETH
-    "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",  # USDC
-    "0xfd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9",  # USDT
-    "0x912CE59144191C1204E64559FE8253a0e49E6548",  # ARB
-    "0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f",  # WBTC
-    "0xfc5A1A6EB076a2C7aD06eD22C90d7E710E35ad0a",  # GMX
-    "0x539bdE0d7Dbd336b79148AA742883198BBF60342",  # MAGIC
-    "0xDA10009cBd5d07dd0CeCc66161FC93D7c9000Da1",  # DAI
-    "0xf97f4df75117a78c1a5a0dbb814af92458539fb4",  # LINK
-    "0xfa9fa403952bf6964d4469a7ebbe16ac158aed17",  # UNI
-    # Extra V2-native hubs to widen the V2 discovery surface.
-    "0x912CE59144191C1204E64559FE8253a0e49E6548",  # ARB (dup-safe)
-    "0x2C1dA6a06f5a8E43aFebB8c15e8d1e66893B5e",  # GRAIL
-    "0xB31f63e2442BCA96bd58a2D7CCd5fCd3c37A2e",  # USDC.e
-    "0x17FC77aA2C394C36d52B6Cd1F3Ea98e4aE9d84f",  # AAVE
-    "0x2f7240E4f10129b2b83a8a8CD9ADa3bF6C9f3",  # USDC.e alt
-]
-
-# Curated, proven Arbitrum V2 pools — last-resort seed if the live API
-# is rate-limited / blocklisted (e.g. DexScreener behind Cloudflare).
+# Curated, proven Arbitrum pools — last-resort seed if both live APIs are
+# rate-limited / blocklisted. Only used when nothing else is available.
 STATIC_FALLBACK = [
     {"pair_address": "0xf64dfe17c8b87f012fcf50fbda1d62bfa148366a",
      "token0": "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
@@ -155,44 +148,11 @@ def _format(p: dict) -> dict:
 
 
 # --------------------------------------------------------------------------
-# DexScreener
+# GeckoTerminal — network pools (top-down bulk pagination)
 # --------------------------------------------------------------------------
-async def _fetch_dexscreener(
-    client: httpx.AsyncClient, tokens: list[str]
-) -> list[dict]:
-    url = f"{TOKEN_PAIRS_URL}/{','.join(tokens)}"
-    for attempt in range(4):
-        try:
-            resp = await client.get(url)
-            if resp.status_code == 429:
-                wait = 2 ** (attempt + 1)
-                logger.warning("DexScreener 429, waiting %ds", wait)
-                await asyncio.sleep(wait)
-                continue
-            if resp.status_code >= 400:
-                logger.error("DexScreener HTTP %d", resp.status_code)
-                return []
-            data = resp.json()
-            return data if isinstance(data, list) else []
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code == 429:
-                await asyncio.sleep(2 ** (attempt + 1))
-                continue
-            logger.error("DexScreener HTTP %d", e.response.status_code)
-            return []
-        except (httpx.ConnectError, httpx.TimeoutException) as e:
-            logger.error("DexScreener connection error: %s", e)
-            return []
-        except json.JSONDecodeError as e:
-            logger.error("DexScreener bad JSON: %s", e)
-            return []
-    return []
-
-
-# --------------------------------------------------------------------------
-# GeckoTerminal fallback
-# --------------------------------------------------------------------------
-def _gecko_pair_to_common(pool: dict) -> dict | None:
+def _gecko_pool_to_common(pool: dict) -> dict | None:
+    """GeckoTerminal network-pools payload uses the same data envelope as the
+    token-pools endpoint, so reuse the same parser shape."""
     attrs = pool.get("attributes", {})
     rel = pool.get("relationships", {})
     base = rel.get("base_token", {}).get("data", {})
@@ -218,47 +178,62 @@ def _gecko_pair_to_common(pool: dict) -> dict | None:
     }
 
 
-async def _fetch_gecko(
-    client: httpx.AsyncClient, tokens: list[str]
-) -> list[dict]:
-    out: list[dict] = []
-    for idx, tok in enumerate(tokens):
-        # Honor GeckoTerminal's public rate limit (~1 req/0.6s).
-        if idx > 0:
-            await asyncio.sleep(1.2)
-        got = False
-        for attempt in range(4):
-            try:
-                url = f"{GECKO_URL}/networks/arbitrum/tokens/{tok}/pools?page=1"
-                resp = await client.get(url)
-                if resp.status_code == 429:
-                    # Bounded, capped backoff so a throttled IP can't stall the
-                    # whole crawl for minutes.
-                    wait = min(2 ** (attempt + 1), 6)
-                    logger.warning("GeckoTerminal 429, waiting %ds", wait)
-                    await asyncio.sleep(wait)
-                    continue
-                if resp.status_code >= 400:
-                    break
-                items = resp.json().get("data", [])
-                for pool in items:
-                    common = _gecko_pair_to_common(pool)
-                    if common:
-                        out.append(common)
-                got = True
-                break
-            except (httpx.ConnectError, httpx.TimeoutException) as e:
-                logger.debug("GeckoTerminal token %s error: %s", tok[:10], e)
-                await asyncio.sleep(min(2 ** (attempt + 1), 6))
-                continue
-            except Exception as e:  # noqa: BLE001
-                logger.debug("GeckoTerminal token %s error: %s", tok[:10], e)
-                break
-        if not got:
-            logger.warning("GeckoTerminal skipped token %s (rate-limited)", tok[:10])
-        # Early-exit once we have enough qualifying pools.
-        if sum(1 for p in out if _valid_pair(p)) >= TARGET_POOLS:
+async def _fetch_gecko_pools(client: httpx.AsyncClient) -> list[dict]:
+    """Paginate the top-volume Arbitrum pools. One request per page, 2.0s
+    apart. Returns Gecko-native pool dicts (pre _valid_pair)."""
+    common: list[dict] = []
+    for page in range(1, PAGES + 1):
+        url = f"{GECKO_NETWORK_POOLS}?page={page}"
+        try:
+            resp = await client.get(url)
+        except (httpx.ConnectError, httpx.TimeoutException) as e:
+            logger.warning("GeckoTerminal connection error on page %d: %s", page, e)
             break
+        if resp.status_code == 429:
+            logger.warning("GeckoTerminal 429 on page %d — stopping crawl", page)
+            break
+        if resp.status_code >= 400:
+            logger.warning("GeckoTerminal HTTP %d on page %d — stopping", resp.status_code, page)
+            break
+        items = resp.json().get("data", [])
+        if not items:
+            break
+        for pool in items:
+            c = _gecko_pool_to_common(pool)
+            if c:
+                common.append(c)
+        logger.info("GeckoTerminal page %d: %d pools (%d total)", page, len(items), len(common))
+        if page < PAGES:
+            await asyncio.sleep(PAGE_SLEEP)
+    return common
+
+
+# --------------------------------------------------------------------------
+# DexScreener — top-pools fallback (network-wide trending)
+# --------------------------------------------------------------------------
+async def _fetch_dexscreener_top(client: httpx.AsyncClient) -> list[dict]:
+    try:
+        resp = await client.get(DEXSCREENER_TOP)
+    except (httpx.ConnectError, httpx.TimeoutException) as e:
+        logger.warning("DexScreener connection error: %s", e)
+        return []
+    if resp.status_code >= 400:
+        logger.warning("DexScreener HTTP %d", resp.status_code)
+        return []
+    data = resp.json()
+    if not isinstance(data, list):
+        return []
+    out: list[dict] = []
+    for p in data:
+        out.append({
+            "chainId": (p.get("chainId") or "arbitrum").lower(),
+            "dexId": p.get("dexId", ""),
+            "pairAddress": p.get("pairAddress", ""),
+            "baseToken": {"address": (p.get("baseToken") or {}).get("address", "")},
+            "quoteToken": {"address": (p.get("quoteToken") or {}).get("address", "")},
+            "liquidity": {"usd": (p.get("liquidity") or {}).get("usd", 0) or 0},
+            "volume": {"h24": (p.get("volume") or {}).get("h24", 0) or 0},
+        })
     return out
 
 
@@ -271,67 +246,28 @@ async def main() -> None:
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
     )
 
-    frontier: set[str] = {t.lower() for t in SEED_TOKENS}
-    visited: set[str] = set()
     pools: dict[str, dict] = {}
-    early_exit = False
 
     async with httpx.AsyncClient(
         timeout=30.0, headers={"User-Agent": "LongTailBot/1.0"}
     ) as client:
-        while frontier and len(visited) < MAX_TOKENS_VISITED:
-            batch = [frontier.pop() for _ in range(min(BATCH_SIZE, len(frontier)))]
-            visited.update(batch)
+        pairs = await _fetch_gecko_pools(client)
 
-            # GeckoTerminal is the reliable source on Arbitrum (DexScreener is
-            # frequently behind Cloudflare 403). Prefer Gecko; only fall back to
-            # DexScreener when Gecko yields nothing.
-            pairs = await _fetch_gecko(client, batch)
-            if not pairs:
-                logger.warning(
-                    "GeckoTerminal returned nothing for batch; trying DexScreener"
-                )
-                pairs = await _fetch_dexscreener(client, batch)
+        # Fallback chain: Gecko failed/empty -> DexScreener top -> static.
+        if not pairs:
+            logger.warning("GeckoTerminal yielded nothing — trying DexScreener top pools")
+            pairs = await _fetch_dexscreener_top(client)
 
-            if pairs:
-                early_exit = False
-            elif not early_exit:
-                early_exit = True
-            else:
-                # Two consecutive empty batches after reaching rate-limit calm-down:
-                # pause once, then continue crawling remaining seeds.
-                logger.warning("Empty batch — cooling down 5s")
-                await asyncio.sleep(5.0)
+        for p in pairs:
+            if not _valid_pair(p):
+                continue
+            pair_addr = p["pairAddress"].lower()
+            if pair_addr in pools:
+                continue
+            vol = (p.get("volume") or {}).get("h24") or 0.0
+            pools[pair_addr] = {"fmt": _format(p), "vol": vol}
 
-            logger.info(
-                "Fetched %d pairs for %d tokens (visited=%d, pools=%d)",
-                len(pairs),
-                len(batch),
-                len(visited),
-                len(pools),
-            )
-
-            for p in pairs:
-                if not _valid_pair(p):
-                    continue
-                pair_addr = p["pairAddress"].lower()
-                if pair_addr in pools:
-                    continue
-                vol = (p.get("volume") or {}).get("h24") or 0.0
-                pools[pair_addr] = {"fmt": _format(p), "vol": vol}
-                for tok in (
-                    p["baseToken"]["address"].lower(),
-                    p["quoteToken"]["address"].lower(),
-                ):
-                    if tok not in visited:
-                        frontier.add(tok)
-
-            if len(pools) >= TARGET_POOLS * 3:
-                break
-            await asyncio.sleep(0.25)
-
-    ranked = sorted(pools.values(), key=lambda d: d["vol"], reverse=True)
-    live = [d["fmt"] for d in ranked[:TARGET_POOLS]]
+    live = sorted(pools.values(), key=lambda d: d["vol"], reverse=True)[:TARGET_POOLS]
 
     # Load any existing whitelist and merge so a rate-limited / partial crawl
     # never wipes previously-discovered pools. Live pools take precedence.
@@ -343,11 +279,9 @@ async def main() -> None:
         except (json.JSONDecodeError, KeyError, TypeError):
             logger.warning("Existing whitelist unreadable — starting fresh")
 
-    merged = {p["pair_address"].lower(): p for p in live}
+    merged = {p["fmt"]["pair_address"].lower(): p["fmt"] for p in live}
     merged.update(existing)  # keep any prior pools not rediscovered this run
 
-    # Rank merged pools by discovered volume (existing pools default to 0 so
-    # freshly-discovered high-volume pools float to the top).
     def _vol(pair: str) -> float:
         for d in pools.values():
             if d["fmt"]["pair_address"].lower() == pair:
@@ -365,13 +299,12 @@ async def main() -> None:
     WHITELIST_PATH.write_text(json.dumps(final, indent=2) + "\n")
 
     logger.info(
-        "Wrote %d pools to %s (live=%d, prior=%d, discovered=%d, tokens=%d)",
+        "Wrote %d pools to %s (live=%d, prior=%d, discovered=%d)",
         len(final),
         WHITELIST_PATH,
         len(live),
         len(existing),
         len(pools),
-        len(visited),
     )
 
 
