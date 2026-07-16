@@ -90,7 +90,9 @@ async def _run_engine() -> None:
     llm_model = os.getenv("LLM_MODEL_PRIMARY", "llama-3.3-70b-versatile")
 
     sync_queue: asyncio.Queue = asyncio.Queue()
-    ws_listener = WebSocketListener(wss_url, flea.whitelisted_addresses)
+    ws_listener = WebSocketListener(
+        wss_url, flea.whitelisted_addresses, v3_addresses=flea.v3_addresses
+    )
 
     process_a = ProcessAIndexer(
         rpc_manager=rpc,

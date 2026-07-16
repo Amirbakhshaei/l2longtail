@@ -103,7 +103,9 @@ async def main() -> None:
 
     sync_queue: asyncio.Queue = asyncio.Queue()
 
-    ws_listener = WebSocketListener(wss_url, flea.whitelisted_addresses)
+    ws_listener = WebSocketListener(
+        wss_url, flea.whitelisted_addresses, v3_addresses=flea.v3_addresses
+    )
 
     print("\nGRAPH ARBITRAGE SYSTEM (WSS SYNC ENGINE)")
     print(f"  Mode:        {'PAPER' if dry_run else 'LIVE'}")

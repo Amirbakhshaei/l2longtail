@@ -21,6 +21,11 @@ logger = logging.getLogger(__name__)
 
 V2_SYNC_TOPIC = "0x1c411e9a96e071241c2f21f7726b17ae89e3cab4c78be50e062b03a9fffbbad1"
 
+# Uniswap/Camelot v3 Swap event: Swap(address,address,int256,int256,uint160,uint128,int24)
+V3_SWAP_TOPIC = "0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67"
+
+V3_DEXES = {"uniswap_v3", "camelot_v3"}
+
 
 @dataclass
 class WhitelistPool:
@@ -28,6 +33,10 @@ class WhitelistPool:
     token0: str
     token1: str
     dex: str
+
+    @property
+    def is_v3(self) -> bool:
+        return self.dex in V3_DEXES
 
 
 @dataclass
@@ -37,6 +46,27 @@ class SyncEvent:
     token1: str
     reserve0: int
     reserve1: int
+    block_number: int
+    dex: str
+    timestamp: float
+
+
+@dataclass
+class V3StateEvent:
+    """Concentrated-liquidity pool state update.
+
+    Carries the current ``sqrtPriceX96``, ``tick`` and ``liquidity`` of a
+    Uniswap/Camelot v3 pool, emitted on every ``Swap`` / ``Burn`` / ``Mint``
+    that moves the active range. The engine feeds this straight into
+    ``DirectedGraph.update_v3_state`` to re-price the V3 edge.
+    """
+
+    pool_address: str
+    token0: str
+    token1: str
+    sqrt_price_x96: int
+    tick: int
+    liquidity: int
     block_number: int
     dex: str
     timestamp: float
@@ -78,6 +108,10 @@ class FleaMarketDiscovery:
     @property
     def whitelisted_addresses(self) -> list[str]:
         return [p.pair_address for p in self._whitelist]
+
+    @property
+    def v3_addresses(self) -> list[str]:
+        return [p.pair_address for p in self._whitelist if p.is_v3]
 
     @property
     def pool_count(self) -> int:

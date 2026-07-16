@@ -18,6 +18,18 @@ V2_FEE = 0.997
 LP_FEE_BPS = 30
 INF = float("inf")
 
+# V3 fee-tier -> multiplier applied to amountIn (1 - fee).
+V3_FEE = {
+    100: 0.9999,    # 0.01%
+    500: 0.9995,    # 0.05%
+    3000: 0.997,     # 0.30%
+    10000: 0.99,    # 1.00%
+}
+MIN_TICK = -887272
+MAX_TICK = 887272
+Q96 = 2 ** 96
+Q128 = 2 ** 128
+
 
 def get_amount_out(amount_in: int, reserve_in: int, reserve_out: int, fee_tier: int = 3) -> int:
     """
@@ -325,21 +337,106 @@ class PoolEdge:
 
 
 @dataclass
+class V3PoolEdge:
+    """A V3 concentrated-liquidity edge (one fee-tier pool)."""
+
+    pool_address: str
+    token0: str
+    token1: str
+    dex: str
+    fee_bps: int = 3000
+    # On-chain V3 slot0/1 state (populated by sync/observations).
+    sqrt_price_x96: int = 0
+    tick: int = 0
+    liquidity: int = 0
+
+    @property
+    def fee_multiplier(self) -> float:
+        return V3_FEE.get(self.fee_bps, 0.997)
+
+
+def v3_amount_out(amount_in: int, edge: V3PoolEdge, from_token: str) -> int:
+    """
+    Single-hop V3 output via the exact constant-liquidity swap formulas
+    (no tick crossing — the on-chain Quoter handles full-range traversal at
+    execution time; this is for loop detection and input sizing).
+
+    Given ``amount_in`` of the input token (pre-fee), fee is taken on the
+    input side. With active liquidity ``L`` and current ``sqrtPriceX96`` = p:
+
+      zero_for_one (sell token0=x, buy y):  known Δx_with_fee
+          p_after = 1 / (1/p + Δx/L)
+          Δy      = L * (p - p_after)
+      one_for_zero (sell token1=y, buy x):  known Δy_with_fee
+          p_after = p + Δy/L
+          Δx      = L * (1/p_after - 1/p)
+
+    Returns 0 on empty/invalid state. Integer Q96 math.
+    """
+    if amount_in == 0 or edge.liquidity == 0 or edge.sqrt_price_x96 == 0:
+        return 0
+
+    zero_for_one = from_token.lower() == edge.token0.lower()
+    amount_in_with_fee = int(amount_in * edge.fee_multiplier)
+    if amount_in_with_fee == 0:
+        return 0
+
+    p = edge.sqrt_price_x96          # sqrtPriceX96
+    L = edge.liquidity
+    Q = Q96
+
+    try:
+        if zero_for_one:
+            # 1/p in Q96
+            inv_p = (Q * Q) // p
+            # p_after = 1 / (1/p + Δx/L)  -> 1/p_after = inv_p + Δx*Q/L
+            inv_p_after = inv_p + (amount_in_with_fee * Q) // L
+            if inv_p_after == 0:
+                return 0
+            p_after = (Q * Q) // inv_p_after
+            # Δy = L * (p - p_after) / Q
+            if p <= p_after:
+                return 0
+            amount_out = (L * (p - p_after)) // Q
+        else:
+            # p_after = p + Δy/L
+            p_after = p + (amount_in_with_fee * Q) // L
+            # Δx = L * (1/p_after - 1/p) / Q
+            inv_p = (Q * Q) // p
+            inv_p_after = (Q * Q) // p_after
+            if inv_p <= inv_p_after:
+                return 0
+            amount_out = (L * (inv_p - inv_p_after)) // Q
+    except (ZeroDivisionError, OverflowError):
+        return 0
+
+    return amount_out if amount_out > 0 else 0
+
+
+@dataclass
 class ArbCycle:
     """A negative-weight cycle (arbitrage loop) discovered by Bellman-Ford."""
 
     tokens: list[str]  # length k+1, tokens[0] == tokens[-1]
     pools: list[str]   # length k, pools[i] connects tokens[i] -> tokens[i+1]
     dexes: list[str]   # length k, dex venue per hop
+    is_v3: list[bool]  # length k, True if hop i is a V3 pool
 
     @property
     def hop_count(self) -> int:
         return len(self.pools)
 
     def directed_hops(self, graph: "DirectedGraph") -> list[tuple[int, int]]:
-        """Reserve tuples (reserve_in, reserve_out) for each hop in order."""
+        """Reserve tuples (reserve_in, reserve_out) for each V2 hop in order.
+
+        V3 hops return (0, 0) — they are priced via ``v3_amount_out``
+        in ``get_amount_out_multi_hop`` instead of the constant-product form.
+        """
         hops: list[tuple[int, int]] = []
         for i, pool in enumerate(self.pools):
+            if self.is_v3[i]:
+                hops.append((0, 0))
+                continue
             edge = graph.edges[pool]
             hops.append(edge.reserves_from(self.tokens[i]))
         return hops
@@ -347,31 +444,51 @@ class ArbCycle:
 
 class DirectedGraph:
     """
-    Token graph over whitelisted V2 pools.
+    Token graph over whitelisted V2 **and** V3 pools.
 
     Nodes = tokens. Edges = pools (bidirectional). Edge weights are
-    ``-log(rate_after_0.3%_fee)`` where rate is the spot output-per-input of
-    the constant-product curve. A negative-weight cycle therefore implies a
-    profitable arbitrage loop whose product of execution rates exceeds 1.
+    ``-log(rate_after_fee)`` where rate is the spot output-per-input.
+    For V2 the rate comes from the constant-product reserves; for V3 it comes
+    from the current ``sqrtPriceX96`` tick state. A negative-weight cycle
+    therefore implies a profitable arbitrage loop whose product of
+    execution rates exceeds 1 across any mix of V2/V3 hops.
 
-    On every Sync event, ``update_reserves`` mutates the affected edge, which
-    immediately changes the weights used by the next ``find_arbitrage_cycle``.
+    On every Sync/observations event, ``update_reserves`` / ``update_v3_state``
+    mutate the affected edge, which immediately changes the weights used by
+    the next ``find_arbitrage_cycle``.
     """
 
-    def __init__(self, pools: list[PoolEdge] | None = None) -> None:
+    def __init__(
+        self,
+        pools: list[PoolEdge] | None = None,
+        v3_pools: list[V3PoolEdge] | None = None,
+    ) -> None:
         self.nodes: set[str] = set()
         self.edges: dict[str, PoolEdge] = {}
+        self.v3_edges: dict[str, V3PoolEdge] = {}
         self.adj: dict[str, list[str]] = {}
         if pools:
             for p in pools:
                 self.add_pool(p)
+        if v3_pools:
+            for p in v3_pools:
+                self.add_v3_pool(p)
 
     def add_pool(self, pool: PoolEdge) -> None:
-        self.edges[pool.pair_address.lower()] = pool
+        key = pool.pair_address.lower()
+        self.edges[key] = pool
         self.nodes.add(pool.token0)
         self.nodes.add(pool.token1)
-        self.adj.setdefault(pool.token0, []).append(pool.pair_address.lower())
-        self.adj.setdefault(pool.token1, []).append(pool.pair_address.lower())
+        self.adj.setdefault(pool.token0, []).append(key)
+        self.adj.setdefault(pool.token1, []).append(key)
+
+    def add_v3_pool(self, pool: V3PoolEdge) -> None:
+        key = pool.pool_address.lower()
+        self.v3_edges[key] = pool
+        self.nodes.add(pool.token0)
+        self.nodes.add(pool.token1)
+        self.adj.setdefault(pool.token0, []).append(key)
+        self.adj.setdefault(pool.token1, []).append(key)
 
     def update_reserves(
         self, pair_address: str, reserve0: int, reserve1: int
@@ -382,15 +499,41 @@ class DirectedGraph:
         edge.reserve0 = reserve0
         edge.reserve1 = reserve1
 
+    def update_v3_state(
+        self,
+        pool_address: str,
+        sqrt_price_x96: int,
+        tick: int,
+        liquidity: int,
+    ) -> None:
+        edge = self.v3_edges.get(pool_address.lower())
+        if edge is None:
+            return
+        edge.sqrt_price_x96 = sqrt_price_x96
+        edge.tick = tick
+        edge.liquidity = liquidity
+
     def _weight(self, edge_key: str, from_token: str) -> float:
-        edge = self.edges[edge_key]
-        reserve_in, reserve_out = edge.reserves_from(from_token)
-        if reserve_in == 0 or reserve_out == 0:
-            return INF
-        rate = (reserve_out * V2_FEE) / reserve_in
-        if rate <= 0:
-            return INF
-        return -math.log(rate)
+        edge = self.edges.get(edge_key)
+        if edge is not None:
+            reserve_in, reserve_out = edge.reserves_from(from_token)
+            if reserve_in == 0 or reserve_out == 0:
+                return INF
+            rate = (reserve_out * V2_FEE) / reserve_in
+            if rate <= 0:
+                return INF
+            return -math.log(rate)
+        v3 = self.v3_edges.get(edge_key)
+        if v3 is not None:
+            out = v3_amount_out(1_000_000_000_000_000_000, v3, from_token)
+            if out == 0:
+                return INF
+            # rate = out per 1e18 input (spot, post-fee)
+            rate = out / 1e18
+            if rate <= 0:
+                return INF
+            return -math.log(rate)
+        return INF
 
     def find_arbitrage_cycle(self, start_token: str) -> ArbCycle | None:
         """
@@ -429,6 +572,21 @@ class DirectedGraph:
                     pred[v2] = u2
                     pred_edge[v2] = key
                     changed = True
+            for key, edge in self.v3_edges.items():
+                u, v = idx[edge.token0], idx[edge.token1]
+                w = self._weight(key, edge.token0)
+                if dist[u] + w < dist[v] - 1e-15:
+                    dist[v] = dist[u] + w
+                    pred[v] = u
+                    pred_edge[v] = key
+                    changed = True
+                u2, v2 = v, u
+                w2 = self._weight(key, edge.token1)
+                if dist[u2] + w2 < dist[v2] - 1e-15:
+                    dist[v2] = dist[u2] + w2
+                    pred[v2] = u2
+                    pred_edge[v2] = key
+                    changed = True
             return changed
 
         for _ in range(N - 1):
@@ -445,6 +603,15 @@ class DirectedGraph:
             if dist[v] + self._weight(key, edge.token1) < dist[u] - 1e-15:
                 cycle_node = u
                 break
+        if cycle_node is None:
+            for key, edge in self.v3_edges.items():
+                u, v = idx[edge.token0], idx[edge.token1]
+                if dist[u] + self._weight(key, edge.token0) < dist[v] - 1e-15:
+                    cycle_node = v
+                    break
+                if dist[v] + self._weight(key, edge.token1) < dist[u] - 1e-15:
+                    cycle_node = u
+                    break
         if cycle_node is None:
             return None
 
@@ -475,9 +642,19 @@ class DirectedGraph:
         if len(path_pools) < 2:
             return None
 
-        dexes = [self.edges[p].dex for p in path_pools]
+        dexes = []
+        is_v3 = []
+        for p in path_pools:
+            if p in self.edges:
+                dexes.append(self.edges[p].dex)
+                is_v3.append(False)
+            else:
+                dexes.append(self.v3_edges[p].dex)
+                is_v3.append(True)
 
-        cycle = ArbCycle(tokens=path_tokens, pools=path_pools, dexes=dexes)
+        cycle = ArbCycle(
+            tokens=path_tokens, pools=path_pools, dexes=dexes, is_v3=is_v3
+        )
 
         # Rotate so the loop begins (and ends) at the requested start token.
         # Required because the flashloan borrows/lends this asset.
@@ -498,20 +675,36 @@ class DirectedGraph:
         tokens = cycle.tokens[idx:-1] + cycle.tokens[: idx + 1]
         pools = cycle.pools[idx:] + cycle.pools[:idx]
         dexes = cycle.dexes[idx:] + cycle.dexes[:idx]
-        return ArbCycle(tokens=tokens, pools=pools, dexes=dexes)
+        is_v3 = cycle.is_v3[idx:] + cycle.is_v3[:idx]
+        return ArbCycle(tokens=tokens, pools=pools, dexes=dexes, is_v3=is_v3)
 
 
 def get_amount_out_multi_hop(
     directed_hops: list[tuple[int, int]],
     amount_in: int,
+    graph: "DirectedGraph | None" = None,
+    cycle: "ArbCycle | None" = None,
 ) -> int:
     """
-    Chain constant-product swaps across an ordered list of (reserve_in,
-    reserve_out) tuples. Applies the 0.3% V2 fee per hop. Returns the final
+    Chain swaps across an ordered list of hops. V2 hops use the
+    constant-product ``get_amount_out``; V3 hops use ``v3_amount_out``
+    driven by the live ``sqrtPriceX96`` tick state. Returns the final
     output amount (0 if any hop fails).
+
+    For V3-aware pricing, pass ``graph`` and ``cycle`` so each hop can be
+    resolved to its V3 edge (the matching ``directed_hops`` entry is (0, 0)).
     """
     out = amount_in
-    for reserve_in, reserve_out in directed_hops:
+    for i, (reserve_in, reserve_out) in enumerate(directed_hops):
+        if reserve_in == 0 and reserve_out == 0 and cycle is not None and graph is not None:
+            if i < len(cycle.is_v3) and cycle.is_v3[i]:
+                edge = graph.v3_edges.get(cycle.pools[i])
+                if edge is None:
+                    return 0
+                out = v3_amount_out(out, edge, cycle.tokens[i])
+                if out == 0:
+                    return 0
+                continue
         out = get_amount_out(out, reserve_in, reserve_out)
         if out == 0:
             return 0
@@ -523,20 +716,30 @@ def calculate_optimal_input_size(
     gas_cost_wei: int,
     max_input_wei: int,
     iterations: int = 100,
+    graph: "DirectedGraph | None" = None,
+    cycle: "ArbCycle | None" = None,
 ) -> int:
     """
     Ternary search for the exact ``amount_in`` that maximises net profit:
 
         f(x) = get_amount_out_multi_hop(x) - x - gas_cost_wei
 
-    The objective is unimodal (concave) on x*y=k curves, so ternary search
-    converges to the local maximum. Bounds are [1 wei, max_input_wei].
+    The objective is unimodal (concave) on x*y=k and constant-L V3 curves,
+    so ternary search converges to the local maximum. Bounds are
+    [1 wei, max_input_wei].
+
+    Pass ``graph`` and ``cycle`` when any hop is a V3 pool so the objective
+    prices those hops via ``v3_amount_out``.
 
     Returns the optimal ``amount_in`` in wei, or 0 if max profit <= 0.
     """
 
     def objective(x: int) -> int:
-        return get_amount_out_multi_hop(directed_hops, x) - x - gas_cost_wei
+        return (
+            get_amount_out_multi_hop(directed_hops, x, graph, cycle)
+            - x
+            - gas_cost_wei
+        )
 
     lo, hi = 1, max(max_input_wei, 1)
     for _ in range(iterations):

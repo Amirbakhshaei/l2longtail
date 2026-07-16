@@ -3,10 +3,11 @@ pragma solidity ^0.8.20;
 
 /// @title FlashloanExecutor
 /// @notice Balancer V2 flashloan-driven multi-hop arbitrage executor for
-///         Uniswap-V2-style constant-product routers on Arbitrum One.
+///         Uniswap/Camelot V2 and V3 routers on Arbitrum One.
 /// @dev Implements IFlashLoanRecipient. Borrows WETH, walks the encoded swap
-///       path across whitelisted V2 routers, repays the Balancer Vault (0% fee
-///       venue on Arbitrum), and forwards net profit to the owner.
+///       path across whitelisted V2 (swapExactTokensForTokens) and V3
+///       (exactInputSingle) routers, repays the Balancer Vault (0% fee venue
+///       on Arbitrum), and forwards net profit to the owner.
 
 interface IERC20 {
     function totalSupply() external view returns (uint256);
@@ -28,6 +29,25 @@ interface IUniswapV2Router {
         address to,
         uint256 deadline
     ) external returns (uint256[] memory amounts);
+}
+
+/// @notice Uniswap/Camelot V3 SwapRouter02 — exactInputSingle entrypoint.
+interface ISwapRouter {
+    struct ExactInputSingleParams {
+        address tokenIn;
+        address tokenOut;
+        uint24 fee;
+        address recipient;
+        uint256 deadline;
+        uint256 amountIn;
+        uint256 amountOutMinimum;
+        uint160 sqrtPriceLimitX96;
+    }
+
+    function exactInputSingle(ExactInputSingleParams calldata params)
+        external
+        payable
+        returns (uint256 amountOut);
 }
 
 interface IFlashLoanRecipient {
@@ -59,6 +79,7 @@ contract FlashloanExecutor is IFlashLoanRecipient {
     error NotVault();
     error InsufficientRepayment();
     error NoProfit();
+    error LengthMismatch();
 
     modifier onlyOwner() {
         if (msg.sender != owner) revert Unauthorized();
@@ -72,21 +93,33 @@ contract FlashloanExecutor is IFlashLoanRecipient {
     }
 
     /// @notice Entry point used by Process B to trigger the arbitrage.
-    /// @param path   Token addresses, path[0] == path[last] == WETH.
-    /// @param routers Router address for each hop (len(path) - 1).
-    /// @param amount  WETH principal to borrow via flashloan.
+    /// @param path     Token addresses, path[0] == path[last] == WETH.
+    /// @param routers  Router address for each hop (len(path) - 1).
+    /// @param feeTiers V3 fee tier (bps, e.g. 3000 = 0.30%) per hop.
+    ///                 Ignored for V2 hops; pass 0 there.
+    /// @param isV3     True if hop i should route via V3 exactInputSingle.
+    /// @param amount   WETH principal to borrow via flashloan.
     function executeArbitrage(
         address[] calldata path,
         address[] calldata routers,
+        uint24[] calldata feeTiers,
+        bool[] calldata isV3,
         uint256 amount
     ) external onlyOwner {
-        if (path.length < 2 || routers.length != path.length - 1) revert Unauthorized();
+        if (
+            path.length < 2
+                || routers.length != path.length - 1
+                || feeTiers.length != routers.length
+                || isV3.length != routers.length
+        ) revert LengthMismatch();
+
         IERC20[] memory tokens = new IERC20[](1);
         tokens[0] = IERC20(address(WETH));
         uint256[] memory amounts = new uint256[](1);
         amounts[0] = amount;
-        // userData packs (path, routers) for receiveFlashLoan.
-        bytes memory userData = abi.encode(path, routers);
+
+        // userData packs (path, routers, feeTiers, isV3) for receiveFlashLoan.
+        bytes memory userData = abi.encode(path, routers, feeTiers, isV3);
         IVault(VAULT).flashLoan(this, tokens, amounts, userData);
     }
 
@@ -100,63 +133,91 @@ contract FlashloanExecutor is IFlashLoanRecipient {
     ) external override {
         if (msg.sender != VAULT) revert NotVault();
 
-        (address[] memory path, address[] memory routers) =
-            abi.decode(userData, (address[], address[]));
+        (
+            address[] memory path,
+            address[] memory routers,
+            uint24[] memory feeTiers,
+            bool[] memory isV3
+        ) = abi.decode(userData, (address[], address[], uint24[], bool[]));
 
-        uint256 borrowed = amounts[0];
-        uint256 fee = feeAmounts[0];
+        uint256 amountIn = _route(path, routers, feeTiers, isV3, amounts[0]);
 
-        // Approve first hop spend.
-        IERC20 first = tokens[0];
-        first.approve(routers[0], borrowed);
-
-        uint256 amountIn = borrowed;
-        for (uint256 i = 0; i < routers.length; i++) {
-            address router = routers[i];
-            address tokenOut = path[i + 1];
-            IERC20(path[i]).approve(router, amountIn);
-
-            uint256[] memory out = IUniswapV2Router(router)
-                .swapExactTokensForTokens(
-                    amountIn,
-                    0, // slippage enforced off-chain via simulation gate
-                    _hop(path, i),
-                    address(this),
-                    block.timestamp + DEADLINE_BUFFER
-                );
-            amountIn = out[out.length - 1];
-
-            // Reset approval on the spent token to avoid lingering allowance.
-            IERC20(path[i]).approve(router, 0);
-        }
-
+        uint256 repayment = amounts[0] + feeAmounts[0];
         uint256 finalBalance = WETH.balanceOf(address(this));
-        uint256 repayment = borrowed + fee;
         if (finalBalance < repayment) revert InsufficientRepayment();
 
         uint256 profit = finalBalance - repayment;
         if (profit == 0) revert NoProfit();
 
-        // Repay the Vault.
         WETH.transfer(VAULT, repayment);
-
-        // Forward net profit to owner.
         if (profit > 0) {
             WETH.transfer(owner, profit);
         }
 
-        emit ArbitrageExecuted(borrowed, profit);
+        emit ArbitrageExecuted(amounts[0], profit);
     }
 
-    function _hop(address[] memory path, uint256 i)
-        private
-        pure
-        returns (address[] memory)
-    {
+    /// @notice Walk every hop, returning the final WETH amount out.
+    function _route(
+        address[] memory path,
+        address[] memory routers,
+        uint24[] memory feeTiers,
+        bool[] memory isV3,
+        uint256 borrowed
+    ) private returns (uint256 amountIn) {
+        amountIn = borrowed;
+        for (uint256 i = 0; i < routers.length; i++) {
+            address router = routers[i];
+            address tokenIn = path[i];
+            address tokenOut = path[i + 1];
+
+            IERC20(tokenIn).approve(router, amountIn);
+            amountIn = isV3[i]
+                ? _swapV3(router, tokenIn, tokenOut, feeTiers[i], amountIn)
+                : _swapV2(router, tokenIn, tokenOut, amountIn);
+            // Reset approval on the spent token to avoid lingering allowance.
+            IERC20(tokenIn).approve(router, 0);
+        }
+    }
+
+    function _swapV2(
+        address router,
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn
+    ) private returns (uint256 amountOut) {
         address[] memory hop = new address[](2);
-        hop[0] = path[i];
-        hop[1] = path[i + 1];
-        return hop;
+        hop[0] = tokenIn;
+        hop[1] = tokenOut;
+        uint256[] memory out = IUniswapV2Router(router).swapExactTokensForTokens(
+            amountIn,
+            0, // slippage enforced off-chain via simulation gate
+            hop,
+            address(this),
+            block.timestamp + DEADLINE_BUFFER
+        );
+        amountOut = out[out.length - 1];
+    }
+
+    function _swapV3(
+        address router,
+        address tokenIn,
+        address tokenOut,
+        uint24 fee,
+        uint256 amountIn
+    ) private returns (uint256 amountOut) {
+        amountOut = ISwapRouter(router).exactInputSingle(
+            ISwapRouter.ExactInputSingleParams({
+                tokenIn: tokenIn,
+                tokenOut: tokenOut,
+                fee: fee,
+                recipient: address(this),
+                deadline: block.timestamp + DEADLINE_BUFFER,
+                amountIn: amountIn,
+                amountOutMinimum: 0, // enforced off-chain via sim gate
+                sqrtPriceLimitX96: 0
+            })
+        );
     }
 
     /// @notice Sweep accidentally-stuck ERC20s (excluding WETH repayment duty).

@@ -17,7 +17,7 @@ import time
 from collections.abc import Awaitable, Callable
 
 from db.cleared_tokens import ClearedToken, ClearedTokensDB
-from infra.flea_market_discovery import SyncEvent
+from infra.flea_market_discovery import SyncEvent, V3StateEvent
 from infra.rpc_manager import RPCManager
 from infra.websocket_listener import WebSocketListener
 
@@ -46,6 +46,7 @@ class ProcessAIndexer:
         self._callbacks: list[Callable[[SyncEvent], Awaitable[None]]] = []
 
         self.listener.on_sync(self._handle_sync)
+        self.listener.on_v3_swap(self._handle_v3)
 
     def on_sync(self, callback: Callable[[SyncEvent], Awaitable[None]]) -> None:
         self._callbacks.append(callback)
@@ -137,3 +138,82 @@ class ProcessAIndexer:
             "Process A: Sync Engine stopped (%d events processed)",
             self._events_processed,
         )
+
+    # ------------------------------------------------------------------ #
+    # V3 Swap ingestion
+    # ------------------------------------------------------------------ #
+    @staticmethod
+    def _parse_v3_log(log: dict) -> V3StateEvent | None:
+        """Decode a Uniswap/Camelot v3 Swap log into a V3StateEvent.
+
+        Non-indexed data layout (each field is a 32-byte ABI word, i.e. 64
+        hex chars, right-aligned):
+            amount0      int256  bytes [0:32]
+            amount1      int256  bytes [32:64]
+            sqrtPriceX96 uint160  bytes [64:96]
+            liquidity    uint128  bytes [96:128]
+            tick         int24    bytes [128:160]
+        """
+        try:
+            pool = (log.get("address") or "").lower()
+            data_hex = (log.get("data") or "0x").replace("0x", "")
+            if len(data_hex) < 320:
+                return None
+
+            # 64-hex-char windows (32-byte words).
+            sqrt_price_x96 = int(data_hex[128:192], 16)
+            liquidity = int(data_hex[192:256], 16)
+            raw_tick = int(data_hex[256:320], 16)
+            if raw_tick >= 2**23:
+                raw_tick -= 2**24
+
+            block_number = int(log.get("blockNumber", "0x0"), 16)
+            dedup_key = f"{pool}:{block_number}:{sqrt_price_x96}:{liquidity}"
+            if getattr(ProcessAIndexer, "_v3_seen", None) is None:
+                ProcessAIndexer._v3_seen = set()
+            if dedup_key in ProcessAIndexer._v3_seen:
+                return None
+            ProcessAIndexer._v3_seen.add(dedup_key)
+            if len(ProcessAIndexer._v3_seen) > 200_000:
+                ProcessAIndexer._v3_seen.clear()
+
+            return V3StateEvent(
+                pool_address=pool,
+                token0="",
+                token1="",
+                sqrt_price_x96=sqrt_price_x96,
+                tick=raw_tick,
+                liquidity=liquidity,
+                block_number=block_number,
+                dex="",
+                timestamp=time.time(),
+            )
+        except Exception as e:  # noqa: BLE001
+            logger.debug("Failed to parse V3 Swap log: %s", e)
+            return None
+
+    async def _handle_v3(self, log: dict) -> None:
+        event = self._parse_v3_log(log)
+        if event is None:
+            return
+        self._events_processed += 1
+
+        token0, token1, dex = await self._resolve_meta_v3(event)
+        event.token0 = token0
+        event.token1 = token1
+        event.dex = dex
+
+        await self.queue.put(event)
+
+        for cb in self._callbacks:
+            try:
+                await cb(event)
+            except Exception as e:  # noqa: BLE001
+                logger.error("Process A V3 downstream callback failed: %s", e)
+
+    async def _resolve_meta_v3(self, event: V3StateEvent) -> tuple[str, str, str]:
+        if self.flea is not None:
+            meta = self.flea.get_pool_meta(event.pool_address)
+            if meta is not None:
+                return meta.token0, meta.token1, meta.dex
+        return "", "", ""

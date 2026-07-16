@@ -23,6 +23,10 @@ import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
+from eth_abi import encode as abi_encode
+from eth_utils import keccak
+
+from infra.flea_market_discovery import SyncEvent, V3StateEvent
 
 from config.constants import (
     DEX_ROUTERS,
@@ -36,6 +40,7 @@ from infra.local_pricing import (
     DirectedGraph,
     ExecutionState,
     PoolEdge,
+    V3PoolEdge,
     PoolInfo,
     QuotePoolInfo,
     TriangularPath,
@@ -438,56 +443,82 @@ class FlashloanExecutor:
         self._compute_selectors()
 
     def _compute_selectors(self) -> None:
-        from web3 import Web3
 
-        self.flashloan_sel = Web3.keccak(
+        self.flashloan_sel = keccak(
             text="flashLoan(address,address[],uint256[],bytes)"
         )[:4].hex()
-        self.execute_sel = Web3.keccak(
-            text="executeArbitrage(address[],address[],uint256)"
+        self.execute_sel = keccak(
+            text="executeArbitrage(address[],address[],uint24[],bool[],uint256)"
         )[:4].hex()
 
     def _encode_user_data(
-        self, path: list[str], routers: list[str]
+        self,
+        path: list[str],
+        routers: list[str],
+        fee_tiers: list[int] | None = None,
+        is_v3: list[bool] | None = None,
     ) -> str:
-        from web3 import Web3
 
-        return Web3.eth.abi.encode(
-            ["address[]", "address[]"], [path, routers]
+        if fee_tiers is None:
+            fee_tiers = [0] * len(path)
+        if is_v3 is None:
+            is_v3 = [False] * len(path)
+        return abi_encode(
+            ["address[]", "address[]", "uint24[]", "bool[]"],
+            [path, routers, fee_tiers, is_v3],
         ).hex()
 
     def build_vault_call(
-        self, amount_in: int, path: list[str], routers: list[str]
+        self,
+        amount_in: int,
+        path: list[str],
+        routers: list[str],
+        fee_tiers: list[int] | None = None,
+        is_v3: list[bool] | None = None,
     ) -> str:
         """eth_call payload: Vault.flashLoan(recipient, [WETH], [amount], userData)."""
-        from web3 import Web3
 
-        user_data = self._encode_user_data(path, routers)
-        params = Web3.eth.abi.encode(
+        user_data = self._encode_user_data(path, routers, fee_tiers, is_v3)
+        params = abi_encode(
             ["address", "address[]", "uint256[]", "bytes"],
             [self.executor, [self.weth], [amount_in], "0x" + user_data],
         ).hex()
         return "0x" + self.flashloan_sel + params
 
     def build_execute_calldata(
-        self, amount_in: int, path: list[str], routers: list[str]
+        self,
+        amount_in: int,
+        path: list[str],
+        routers: list[str],
+        fee_tiers: list[int] | None = None,
+        is_v3: list[bool] | None = None,
     ) -> str:
-        from web3 import Web3
 
-        params = Web3.eth.abi.encode(
-            ["address[]", "address[]", "uint256"],
-            [path, routers, amount_in],
+        if fee_tiers is None:
+            fee_tiers = [0] * len(path)
+        if is_v3 is None:
+            is_v3 = [False] * len(path)
+        params = abi_encode(
+            ["address[]", "address[]", "uint24[]", "bool[]", "uint256"],
+            [path, routers, fee_tiers, is_v3, amount_in],
         ).hex()
         return "0x" + self.execute_sel + params
 
     async def simulate(
-        self, amount_in: int, path: list[str], routers: list[str]
+        self,
+        amount_in: int,
+        path: list[str],
+        routers: list[str],
+        fee_tiers: list[int] | None = None,
+        is_v3: list[bool] | None = None,
     ) -> tuple[bool, str]:
         """Zero-gas eth_call against the Vault's flashLoan entrypoint."""
         if not self.executor:
             return False, "flashloan executor not deployed"
         try:
-            data = self.build_vault_call(amount_in, path, routers)
+            data = self.build_vault_call(
+                amount_in, path, routers, fee_tiers, is_v3
+            )
             result = await self.rpc.call_contract(self.vault, data)
             if result is None or result == "0x" or result.startswith("0x"):
                 return True, ""
@@ -504,13 +535,15 @@ class FlashloanExecutor:
         path: list[str],
         routers: list[str],
         live_executor=None,
+        fee_tiers: list[int] | None = None,
+        is_v3: list[bool] | None = None,
     ) -> tuple[bool, str]:
-        data = self.build_execute_calldata(amount_in, path, routers)
+        data = self.build_execute_calldata(
+            amount_in, path, routers, fee_tiers, is_v3
+        )
         if self.dry_run:
             logger.info(
-                "PAPER FLASHLOAN: borrow=%d wei hops=%d",
-                amount_in,
-                len(routers),
+                "PAPER FLASHLOAN: borrow=%d wei hops=%d", amount_in, len(routers)
             )
             return True, "0x" + "0" * 64
 
@@ -552,6 +585,9 @@ class GraphArbEngine:
         self.live_executor = live_executor
         self.on_result = on_result
         self.on_opportunity = on_opportunity
+        # Hard cap on flashloan size (wei) — protects against unbounded V3
+        # input sizing when the borrow hop has no reserves tuple.
+        self.max_flashloan_wei = 200 * 10**18
 
         self.flashloan = FlashloanExecutor(
             rpc_manager,
@@ -570,23 +606,47 @@ class GraphArbEngine:
         from pathlib import Path
 
         edges: list[PoolEdge] = []
+        v3_edges: list[V3PoolEdge] = []
         raw = json.loads(Path("config/whitelist.json").read_text())
         for entry in raw:
-            edges.append(
-                PoolEdge(
-                    pair_address=entry["pair_address"].lower(),
-                    token0=entry["token0"].lower(),
-                    token1=entry["token1"].lower(),
-                    dex=entry.get("dex", ""),
+            dex = entry.get("dex", "")
+            if dex in ("uniswap_v3", "camelot_v3"):
+                v3_edges.append(
+                    V3PoolEdge(
+                        pool_address=entry["pair_address"].lower(),
+                        token0=entry["token0"].lower(),
+                        token1=entry["token1"].lower(),
+                        dex=dex,
+                        fee_bps=int(entry.get("fee_tier", 3000)),
+                    )
                 )
-            )
-        g = DirectedGraph(edges)
-        logger.info("Graph built: %d nodes, %d pools", len(g.nodes), len(g.edges))
+            else:
+                edges.append(
+                    PoolEdge(
+                        pair_address=entry["pair_address"].lower(),
+                        token0=entry["token0"].lower(),
+                        token1=entry["token1"].lower(),
+                        dex=dex,
+                    )
+                )
+        g = DirectedGraph(edges, v3_edges)
+        logger.info(
+            "Graph built: %d nodes, %d V2 + %d V3 pools",
+            len(g.nodes),
+            len(g.edges),
+            len(g.v3_edges),
+        )
         return g
 
     async def process_sync(self, event) -> None:
         self.graph.update_reserves(
             event.pair_address, event.reserve0, event.reserve1
+        )
+        await self._scan_cycles()
+
+    async def process_v3_state(self, event: "V3StateEvent") -> None:
+        self.graph.update_v3_state(
+            event.pool_address, event.sqrt_price_x96, event.tick, event.liquidity
         )
         await self._scan_cycles()
 
@@ -612,15 +672,24 @@ class GraphArbEngine:
         if not hops:
             return
 
+        # Max input bound: if the borrow (hop 0) is a V2 pool, use its WETH
+        # reserve; if it is a V3 pool (no reserve tuple) fall back to a
+        # configured flashloan cap so ternary search stays bounded.
         weth_reserve = hops[0][0]
+        if weth_reserve == 0:
+            weth_reserve = self.max_flashloan_wei
+        max_input_wei = min(weth_reserve, self.max_flashloan_wei)
+
         gas_wei = int((self.gas_usd / weth_price) * 1e18)
 
-        amount_in = calculate_optimal_input_size(hops, gas_wei, weth_reserve)
+        amount_in = calculate_optimal_input_size(
+            hops, gas_wei, max_input_wei, graph=self.graph, cycle=cycle
+        )
         if amount_in == 0:
             logger.debug("CYCLE: sized to zero profit — skipping")
             return
 
-        out = get_amount_out_multi_hop(hops, amount_in)
+        out = get_amount_out_multi_hop(hops, amount_in, self.graph, cycle)
         net_wei = out - amount_in - gas_wei
         if net_wei <= 0:
             return
@@ -640,6 +709,16 @@ class GraphArbEngine:
             logger.warning("CYCLE: missing router for dex %s", cycle.dexes)
             return
 
+        # Per-hop V3 descriptors: fee tier (bps) + whether the hop is V3.
+        fee_tiers = []
+        for i, is_v3_hop in enumerate(cycle.is_v3):
+            if is_v3_hop:
+                edge = self.graph.v3_edges.get(cycle.pools[i])
+                fee_tiers.append(int(edge.fee_bps) if edge else 3000)
+            else:
+                fee_tiers.append(0)
+        is_v3_flags = list(cycle.is_v3)
+
         logger.info(
             "GRAPH CYCLE: %d hops spread=%.2f%% net=$%.4f borrow=%d wei",
             cycle.hop_count,
@@ -658,7 +737,9 @@ class GraphArbEngine:
                 stage="GRAPH_MATH",
             )
 
-        success, reason = await self.flashloan.simulate(amount_in, path, routers)
+        success, reason = await self.flashloan.simulate(
+            amount_in, path, routers, fee_tiers, is_v3_flags
+        )
         if not success:
             logger.warning("GRAPH SIM FAIL: %s", reason)
             return
@@ -666,7 +747,7 @@ class GraphArbEngine:
         logger.info("GRAPH SIM PASS: %s net=$%.4f", cycle.tokens[1][:10], net_usd)
 
         ok, tx_hash = await self.flashloan.execute(
-            amount_in, path, routers, self.live_executor
+            amount_in, path, routers, self.live_executor, fee_tiers, is_v3_flags
         )
 
         state = ExecutionState(
@@ -768,7 +849,10 @@ class ProcessBSniper:
             while self._running:
                 try:
                     event = await self.sync_queue.get()
-                    await self.graph_engine.process_sync(event)
+                    if isinstance(event, V3StateEvent):
+                        await self.graph_engine.process_v3_state(event)
+                    else:
+                        await self.graph_engine.process_sync(event)
                 except Exception as e:
                     logger.error("Graph sniper cycle failed: %s", e)
             return

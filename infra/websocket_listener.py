@@ -23,7 +23,7 @@ import websockets
 from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed
 
-from infra.flea_market_discovery import SyncEvent, V2_SYNC_TOPIC
+from infra.flea_market_discovery import SyncEvent, V2_SYNC_TOPIC, V3_SWAP_TOPIC
 
 logger = logging.getLogger(__name__)
 
@@ -58,24 +58,32 @@ class WebSocketListener:
         wss_url: str,
         whitelisted_addresses: list[str],
         sync_topic: str = V2_SYNC_TOPIC,
+        v3_addresses: list[str] | None = None,
         max_backoff: float = MAX_BACKOFF,
     ) -> None:
         self.wss_url = wss_url
         self.whitelist = [a.lower() for a in whitelisted_addresses]
         self.whitelist_set = set(self.whitelist)
         self.sync_topic = sync_topic
+        self.v3_addresses = [a.lower() for a in (v3_addresses or [])]
+        self.v3_set = set(self.v3_addresses)
         self.max_backoff = max_backoff
 
         self._running = False
         self._callbacks: list[Callable[[SyncEvent], Awaitable[None]]] = []
+        self._v3_callbacks: list[Callable[[dict], Awaitable[None]]] = []
         self._ws: ClientConnection | None = None
         self._sub: SyncSubscription | None = None
+        self._v3_sub: SyncSubscription | None = None
         self._req_counter = 0
         self._seen: set[str] = set()
         self._events_processed = 0
 
     def on_sync(self, callback: Callable[[SyncEvent], Awaitable[None]]) -> None:
         self._callbacks.append(callback)
+
+    def on_v3_swap(self, callback: Callable[[dict], Awaitable[None]]) -> None:
+        self._v3_callbacks.append(callback)
 
     # ------------------------------------------------------------------ #
     # Connection lifecycle
@@ -118,6 +126,20 @@ class WebSocketListener:
                 sub.sub_id[:18],
             )
 
+            if self.v3_addresses and self._v3_callbacks:
+                v3_sub = await self._subscribe_v3()
+                if v3_sub is None:
+                    logger.warning(
+                        "V3 subscription handshake failed; V3 pools ignored"
+                    )
+                else:
+                    self._v3_sub = v3_sub
+                    logger.info(
+                        "Subscribed to V3 Swap logs on %d pools (sub=%s)",
+                        len(self.v3_addresses),
+                        v3_sub.sub_id[:18],
+                    )
+
             async for raw in ws:
                 if not self._running:
                     break
@@ -151,6 +173,34 @@ class WebSocketListener:
             return None
         return SyncSubscription(sub_id=result, req_id=req_id)
 
+    async def _subscribe_v3(self) -> SyncSubscription | None:
+        assert self._ws is not None
+        self._req_counter += 1
+        req_id = self._req_counter
+        payload = {
+            "jsonrpc": "2.0",
+            "id": req_id,
+            "method": SUBSCRIBE_METHOD,
+            "params": [
+                {
+                    "subscription": "logs",
+                    "logs": {
+                        "address": self.v3_addresses,
+                        "topics": [V3_SWAP_TOPIC],
+                    },
+                }
+            ],
+        }
+        await self._ws.send(json.dumps(payload))
+        resp = await self._recv_json()
+        if resp is None:
+            return None
+        result = resp.get("result")
+        if not result:
+            logger.error("eth_subscribe (V3) returned no id: %s", resp)
+            return None
+        return SyncSubscription(sub_id=result, req_id=req_id)
+
     async def _recv_json(self) -> dict[str, Any] | None:
         assert self._ws is not None
         raw = await self._ws.recv()
@@ -178,20 +228,30 @@ class WebSocketListener:
             return
 
         params = msg.get("params", {})
-        if params.get("subscription") != (self._sub.sub_id if self._sub else None):
-            return
+        sub_id = params.get("subscription")
+        if sub_id == (self._sub.sub_id if self._sub else None):
+            log = params.get("result", {})
+            event = self._parse_sync_log(log)
+            if event is None:
+                return
 
-        log = params.get("result", {})
-        event = self._parse_sync_log(log)
-        if event is None:
-            return
+            self._events_processed += 1
+            for callback in self._callbacks:
+                try:
+                    await callback(event)
+                except Exception as e:  # noqa: BLE001 - never kill the stream
+                    logger.error("Sync callback failed: %s", e)
+        elif sub_id == (self._v3_sub.sub_id if self._v3_sub else None):
+            log = params.get("result", {})
+            if log.get("address", "").lower() not in self.v3_set:
+                return
 
-        self._events_processed += 1
-        for callback in self._callbacks:
-            try:
-                await callback(event)
-            except Exception as e:  # noqa: BLE001 - never kill the stream
-                logger.error("Sync callback failed: %s", e)
+            self._events_processed += 1
+            for callback in self._v3_callbacks:
+                try:
+                    await callback(log)
+                except Exception as e:  # noqa: BLE001 - never kill the stream
+                    logger.error("V3 Swap callback failed: %s", e)
 
     def _parse_sync_log(self, log: dict) -> SyncEvent | None:
         try:

@@ -11,6 +11,22 @@ DEX_ROUTERS = {
     "sushiswap": "0x1b02dA8Cb0d097eB8D57A175b88c7D8b47997506",
     "camelot_v2": "0xc873fEcbd354f5A56E00E710B90EF1836D620000",
     "trader_joe": "0x7BFdb40e7c1B2A47aF4E7008bC2b1a2b5D7F0b7c",
+    "uniswap_v3": "0xE592427A0AEce92De3Edee1F18E0157C05861564",
+    "camelot_v3": "0x1F721759C4aC7284dA8a1520C4bE6A62c5D6D6",
+}
+
+# Uniswap/Camelot V3 SwapRouter02 (exactInputSingle) + QuoterV2 addresses.
+UNISWAP_V3_ROUTER = "0xE592427A0AEce92De3Edee1F18E0157C05861564"
+UNISWAP_V3_QUOTER = "0x61fFEb7d31153286206347717F0a1A4FA9cFed3"
+CAMELOT_V3_ROUTER = "0x1F721759C4aC7284dA8a1520C4bE6A62c5D6D6"
+CAMELOT_V3_QUOTER = "0xcC1F5f3B4e70C78b012C97A9dDfB9f5DeA21A56"
+
+# fee-tier (bps) -> V3 router key, used when routing a V3 hop.
+V3_FEE_BPS_TO_DEX = {
+    100: "uniswap_v3",   # 0.01%
+    500: "uniswap_v3",   # 0.05%
+    3000: "uniswap_v3",  # 0.30%
+    10000: "uniswap_v3", # 1.00%
 }
 
 UNISWAP_V2_FACTORY = "0xf1d7cc64fb4452f05c498126312ebe29f30fbcf9"

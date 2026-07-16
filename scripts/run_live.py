@@ -95,7 +95,9 @@ async def main() -> None:
     flea = FleaMarketDiscovery(rpc_manager, whitelist_path=settings.whitelist_path)
 
     sync_queue: asyncio.Queue = asyncio.Queue()
-    ws_listener = WebSocketListener(settings.wss_rpc_url, flea.whitelisted_addresses)
+    ws_listener = WebSocketListener(
+        settings.wss_rpc_url, flea.whitelisted_addresses, v3_addresses=flea.v3_addresses
+    )
 
     process_a = ProcessAIndexer(
         rpc_manager=rpc_manager,
