@@ -52,7 +52,7 @@ async def _run_engine() -> None:
     from monitoring.alerts import TelegramAlerts
     from process_a_indexer import ProcessAIndexer
     from process_b_sniper import ProcessBSniper
-    from infra.websocket_listener import WebSocketListener
+    from infra.websocket_listener import WebSocketListener, LogsPoller
 
     dry_run = os.getenv("DRY_RUN", "true").lower() == "true"
     trade_size = float(os.getenv("TRADE_SIZE_USD", "10"))
@@ -99,16 +99,43 @@ async def _run_engine() -> None:
     llm_model = os.getenv("LLM_MODEL_PRIMARY", "llama-3.3-70b-versatile")
 
     sync_queue: asyncio.Queue = asyncio.Queue()
-    ws_listener = WebSocketListener(
-        wss_url, flea.whitelisted_addresses, v3_addresses=flea.v3_addresses
+
+    # Choose sync transport: WSS when a real WebSocket endpoint is explicitly
+    # configured (WSS_RPC_URL env), otherwise HTTP eth_getLogs polling (e.g. a
+    # free Ankr HTTPS RPC that has no WebSocket support). The internal
+    # sequencer-feed default is NOT a usable eth_subscribe endpoint, so it must
+    # not force WSS mode.
+    use_wss = bool(
+        os.getenv("WSS_RPC_URL")
+        and settings.sync_transport in ("auto", "wss")
+        and str(os.getenv("WSS_RPC_URL")).startswith(("ws://", "wss://"))
     )
+    if use_wss:
+        sync_source = WebSocketListener(
+            wss_url, flea.whitelisted_addresses, v3_addresses=flea.v3_addresses
+        )
+        sync_transport = "wss"
+    else:
+        if settings.sync_transport == "wss":
+            logger.warning(
+                "sync_transport=wss but no valid WSS_RPC_URL set; falling back to HTTP polling"
+            )
+        sync_source = LogsPoller(
+            rpc_manager=rpc,
+            whitelisted_addresses=flea.whitelisted_addresses,
+            v3_addresses=flea.v3_addresses,
+            poll_interval=settings.sync_poll_interval,
+            poll_blocks=settings.sync_poll_blocks,
+        )
+        sync_transport = "http"
 
     process_a = ProcessAIndexer(
         rpc_manager=rpc,
         cleared_db=cleared_db,
-        websocket_listener=ws_listener,
+        websocket_listener=sync_source,
         sync_queue=sync_queue,
         flea_discovery=flea,
+        transport=sync_transport,
     )
 
     process_b = ProcessBSniper(

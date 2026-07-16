@@ -20,7 +20,7 @@ from db.cleared_tokens import ClearedTokensDB
 from infra.flea_market_discovery import FleaMarketDiscovery
 from infra.rate_limiter import TokenBucketRateLimiter
 from infra.rpc_manager import RPCManager
-from infra.websocket_listener import WebSocketListener
+from infra.websocket_listener import WebSocketListener, LogsPoller
 from monitoring.alerts import TelegramAlerts
 from process_a_indexer import ProcessAIndexer
 from process_b_sniper import ProcessBSniper
@@ -112,17 +112,35 @@ async def main() -> None:
 
     sync_queue: asyncio.Queue = asyncio.Queue()
 
-    ws_listener = WebSocketListener(
-        wss_url, flea.whitelisted_addresses, v3_addresses=flea.v3_addresses
+    use_wss = bool(
+        os.getenv("WSS_RPC_URL")
+        and settings.sync_transport in ("auto", "wss")
+        and str(os.getenv("WSS_RPC_URL")).startswith(("ws://", "wss://"))
     )
+    if use_wss:
+        sync_source = WebSocketListener(
+            wss_url, flea.whitelisted_addresses, v3_addresses=flea.v3_addresses
+        )
+        sync_transport = "wss"
+    else:
+        if settings.sync_transport == "wss":
+            print("  [warn] sync_transport=wss but no valid WSS_RPC_URL; using HTTP polling")
+        sync_source = LogsPoller(
+            rpc_manager=rpc,
+            whitelisted_addresses=flea.whitelisted_addresses,
+            v3_addresses=flea.v3_addresses,
+            poll_interval=settings.sync_poll_interval,
+            poll_blocks=settings.sync_poll_blocks,
+        )
+        sync_transport = "http"
 
-    print("\nGRAPH ARBITRAGE SYSTEM (WSS SYNC ENGINE)")
+    print("\nGRAPH ARBITRAGE SYSTEM (SYNC ENGINE)")
     print(f"  Mode:        {'PAPER' if dry_run else 'LIVE'}")
     print(f"  Duration:    {duration}s")
     print(f"  Trade size:  ${trade_size:.0f}")
     print(f"  Min spread:  {min_spread:.1f}%")
     print(f"  Pools:       {flea.pool_count}")
-    print(f"  WSS:         {wss_url}")
+    print(f"  Transport:   {sync_transport}")
     print(f"  Vault:       {vault_address}")
     print(f"  Executor:    {executor_address or 'NOT DEPLOYED'}")
     print(f"  CSV output:  {CSV_FILE}")
@@ -131,9 +149,10 @@ async def main() -> None:
     process_a = ProcessAIndexer(
         rpc_manager=rpc,
         cleared_db=cleared_db,
-        websocket_listener=ws_listener,
+        websocket_listener=sync_source,
         sync_queue=sync_queue,
         flea_discovery=flea,
+        transport=sync_transport,
     )
 
     process_b = ProcessBSniper(

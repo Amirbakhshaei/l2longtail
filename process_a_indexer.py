@@ -34,12 +34,14 @@ class ProcessAIndexer:
         websocket_listener: WebSocketListener,
         sync_queue: asyncio.Queue[SyncEvent] | None = None,
         flea_discovery=None,
+        transport: str = "wss",
     ) -> None:
         self.rpc = rpc_manager
         self.db = cleared_db
         self.listener = websocket_listener
         self.queue = sync_queue or asyncio.Queue()
         self.flea = flea_discovery
+        self.transport = transport
         self._running = False
         self._events_processed: int = 0
         self._resync_misses: int = 0
@@ -52,10 +54,11 @@ class ProcessAIndexer:
         self._callbacks.append(callback)
 
     async def run(self) -> None:
-        """Await the WSS stream; never returns until stop()."""
+        """Await the sync source (WSS or HTTP poller); runs until stop()."""
         self._running = True
         logger.info(
-            "Process A: WSS Sync Engine started (queue=%s)",
+            "Process A: %s Sync Engine started (queue=%s)",
+            "WSS" if self.transport == "wss" else "HTTP-poll",
             "live" if self.queue else "none",
         )
         try:

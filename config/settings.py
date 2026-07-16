@@ -10,6 +10,11 @@ class Settings(BaseSettings):
     fallback_rpc_url: str = "https://arb1.arbitrum.io/rpc"
     flashbots_rpc_url: str = "https://rpc.flashbots.net/fast"
     wss_rpc_url: str = ""
+    # Sync transport: "auto" (WSS when WSS_RPC_URL is set, else HTTP polling),
+    # "wss" (require WebSocket), or "http" (eth_getLogs polling over HTTPS RPC).
+    sync_transport: str = "auto"
+    sync_poll_interval: float = 4.0   # seconds between eth_getLogs polls
+    sync_poll_blocks: int = 5         # blocks of history fetched per poll
 
     llm_api_key: str = ""
     llm_base_url: str = "https://api.groq.com/openai/v1"
@@ -74,44 +79,74 @@ class Settings(BaseSettings):
         """Return a guaranteed ws:// or wss:// URI for the Arbitrum node.
 
         Priority:
-          1. An explicit WSS_RPC_URL override (normalized).
-          2. Ankr keyed WSS (wss://rpc.ankr.com/arbitrum/ws/<key>) when an API
-             key is present — this is the authenticated endpoint Arbitrum's
-             public gateway (wss://arb1.arbitrum.io/ws) rejects with HTTP 401.
-          3. Derive wss://<host>/ws from the HTTPS fallback RPC host.
-        Any input is stripped of doubled/incorrect schemes before use.
+          1. An explicit WSS_RPC_URL override (normalized). This is the
+             recommended path: point it at a provider that supports the
+             JSON-RPC `eth_subscribe` method (Alchemy, Infura, QuickNode, or
+             Ankr's wss://apis.ankr.com/wss/... endpoint).
+          2. Last resort: the public Arbitrum *sequencer feed*
+             (wss://arb1-feed.arbitrum.io/feed). This connects without auth,
+             but speaks the sequencer batch protocol rather than eth_subscribe,
+             so the listener must run in feed mode for it to deliver swap
+             events. It is only used when no explicit WSS_RPC_URL is set.
+
+        NOTE: Arbitrum's public RPC (wss://arb1.arbitrum.io/ws) does NOT
+        provide WebSocket support and returns HTTP 401 — it is intentionally
+        not used here.
         """
-        # 1) Explicit WSS override (normalized) — takes precedence.
+        # 1) Explicit WSS override (normalized) — takes precedence. This is the
+        #    recommended path: point WSS_RPC_URL at a provider that supports the
+        #    JSON-RPC `eth_subscribe` method (Alchemy, Infura, QuickNode, or
+        #    Ankr's wss://apis.ankr.com/wss/... endpoint).
         cand = (wss or "").strip()
         if cand:
             norm = Settings._wss_from_host(cand)
             if norm:
                 return norm
 
-        # 2) Ankr keyed WSS — the authenticated endpoint.
-        if ankr_key:
-            return f"wss://rpc.ankr.com/arbitrum/ws/{ankr_key}"
-
-        # 3) Derive wss://<host>/ws from the HTTPS fallback RPC host.
-        base = fallback_rpc or ankr_rpc or ""
-        if base:
-            norm = Settings._wss_from_host(base)
-            if norm:
-                return norm
-
-        # 4) Last resort: public Arbitrum WS gateway (may 401 without auth).
-        return "wss://arb1.arbitrum.io/ws"
+        # 2) Last resort: the public Arbitrum *sequencer feed*
+        #    (wss://arb1-feed.arbitrum.io/feed). This connects without auth and
+        #    is the only WebSocket Arbitrum exposes publicly. It speaks the
+        #    sequencer batch protocol rather than eth_subscribe, so the listener
+        #    must run in feed mode for it to deliver swap events. The HTTPS RPC
+        #    host (fallback_rpc_url) is deliberately NOT used: Arbitrum's public
+        #    RPC does not provide WebSocket support and returns HTTP 401.
+        return "wss://arb1-feed.arbitrum.io/feed"
 
     @staticmethod
     def _wss_from_host(value: str) -> str:
-        """Normalize any URL/host to wss://<host>/ws, or '' if not parseable."""
+        """Normalize a WSS input to a valid wss:// URI, preserving any path.
+
+        - Bare host / http(s):// RPC / doubled scheme -> wss://<host>/ws
+        - Already-valid wss:// (e.g. Alchemy/Infura .../ws/<key>) -> kept as-is
+          (the trailing /<key> path is required by those providers).
+        """
         cand = (value or "").strip()
         if not cand:
             return ""
-        # Drop any scheme prefixes (handles wss://wss:// and wss://https://).
-        while "://" in cand:
-            cand = cand.split("://", 1)[1]
-        host = cand.split("/")[0]
-        if host:
-            return f"wss://{host}/ws"
-        return ""
+        # Collapse any doubled/incorrect scheme noise first (wss://https://,
+        # wss://wss://, http://) down to a single scheme-or-host token.
+        while True:
+            stripped = cand.split("://", 1)
+            if len(stripped) == 2 and not cand.startswith(("ws://", "wss://")):
+                cand = stripped[1]
+                continue
+            # A wss:// with another scheme nested after it -> drop the inner.
+            if cand.startswith(("ws://", "wss://")):
+                rest = cand.split("://", 1)[1]
+                if "://" in rest:
+                    cand = "wss://" + rest.split("://", 1)[1]
+                    continue
+            break
+        # Already a valid ws/wss URI (possibly with a path) -> keep it.
+        if cand.startswith(("wss://", "ws://")):
+            return cand
+        # Split host from path; rebuild as wss://<host><path> (default /ws).
+        # This keeps provider paths like /ws/<key> for Alchemy/Infura/QuickNode.
+        parts = cand.split("/", 1)
+        host = parts[0]
+        path = parts[1] if len(parts) > 1 else ""
+        if not host:
+            return ""
+        if path:
+            return f"wss://{host}/{path}"
+        return f"wss://{host}/ws"

@@ -243,7 +243,7 @@ class WebSocketListener:
                     logger.error("Sync callback failed: %s", e)
         elif sub_id == (self._v3_sub.sub_id if self._v3_sub else None):
             log = params.get("result", {})
-            if log.get("address", "").lower() not in self.v3_set:
+            if parse_v3_log(log, self.v3_set) is None:
                 return
 
             self._events_processed += 1
@@ -254,46 +254,201 @@ class WebSocketListener:
                     logger.error("V3 Swap callback failed: %s", e)
 
     def _parse_sync_log(self, log: dict) -> SyncEvent | None:
-        try:
-            pair_address = (log.get("address") or "").lower()
-            if pair_address not in self.whitelist_set:
-                return None
+        return parse_sync_log(log, self.whitelist_set, self._seen)
 
-            data_hex = (log.get("data") or "0x").replace("0x", "")
-            if len(data_hex) < 128:
-                return None
 
-            reserve0 = int(data_hex[0:64], 16)
-            reserve1 = int(data_hex[64:128], 16)
-            if reserve0 == 0 and reserve1 == 0:
-                return None
-
-            block_number = int(log.get("blockNumber", "0x0"), 16)
-
-            dedup_key = f"{pair_address}:{block_number}:{reserve0}:{reserve1}"
-            if dedup_key in self._seen:
-                return None
-            self._seen.add(dedup_key)
-            if len(self._seen) > 200_000:
-                self._seen.clear()
-
-            return SyncEvent(
-                pair_address=pair_address,
-                token0="",
-                token1="",
-                reserve0=reserve0,
-                reserve1=reserve1,
-                block_number=block_number,
-                dex="",
-                timestamp=time.time(),
-            )
-        except Exception as e:  # noqa: BLE001
-            logger.debug("Failed to parse Sync log: %s", e)
+def parse_sync_log(
+    log: dict, whitelist_set: set[str], seen: set[str]
+) -> SyncEvent | None:
+    """Parse a V2 `Sync` log entry into a SyncEvent. Shared by the WSS
+    listener and the HTTP LogsPoller so both feeds produce identical events."""
+    try:
+        pair_address = (log.get("address") or "").lower()
+        if pair_address not in whitelist_set:
             return None
+
+        data_hex = (log.get("data") or "0x").replace("0x", "")
+        if len(data_hex) < 128:
+            return None
+
+        reserve0 = int(data_hex[0:64], 16)
+        reserve1 = int(data_hex[64:128], 16)
+        if reserve0 == 0 and reserve1 == 0:
+            return None
+
+        block_number = int(log.get("blockNumber", "0x0"), 16)
+
+        dedup_key = f"{pair_address}:{block_number}:{reserve0}:{reserve1}"
+        if dedup_key in seen:
+            return None
+        seen.add(dedup_key)
+        if len(seen) > 200_000:
+            seen.clear()
+
+        return SyncEvent(
+            pair_address=pair_address,
+            token0="",
+            token1="",
+            reserve0=reserve0,
+            reserve1=reserve1,
+            block_number=block_number,
+            dex="",
+            timestamp=time.time(),
+        )
+    except Exception as e:  # noqa: BLE001
+        logger.debug("Failed to parse Sync log: %s", e)
+        return None
+
+
+def parse_v3_log(log: dict, v3_set: set[str]) -> dict | None:
+    """Validate a V3 `Swap` log belongs to a whitelisted V3 pool. Returns the
+    raw log (already address-filtered) or None. Shared by both transports."""
+    try:
+        address = (log.get("address") or "").lower()
+        if address not in v3_set:
+            return None
+        return log
+    except Exception:  # noqa: BLE001
+        return None
+
+
+class LogsPoller:
+    """HTTP ``eth_getLogs`` polling transport.
+
+    Used when no WebSocket endpoint is available (e.g. a free Ankr HTTPS RPC
+    that exposes ``eth_getLogs`` but not ``eth_subscribe``). It periodically
+    fetches logs for the V2 ``Sync`` and V3 ``Swap`` topics across the
+    whitelisted pool addresses and feeds the same callbacks as the WSS
+    listener, so downstream logic is transport-agnostic.
+
+    Latency is bounded by ``poll_interval`` (seconds); cost is one batched
+    ``eth_getLogs`` call per topic per poll (addresses are passed as an array).
+    """
+
+    def __init__(
+        self,
+        rpc_manager: "RPCManager",
+        whitelisted_addresses: list[str],
+        sync_topic: str = V2_SYNC_TOPIC,
+        v3_addresses: list[str] | None = None,
+        poll_interval: float = 4.0,
+        poll_blocks: int = 5,
+        max_backoff: float = 30.0,
+    ) -> None:
+        from infra.rpc_manager import RPCManager
+
+        self.rpc: RPCManager = rpc_manager
+        self.whitelist = [a.lower() for a in whitelisted_addresses]
+        self.whitelist_set = set(self.whitelist)
+        self.sync_topic = sync_topic
+        self.v3_addresses = [a.lower() for a in (v3_addresses or [])]
+        self.v3_set = set(self.v3_addresses)
+        self.poll_interval = poll_interval
+        self.poll_blocks = poll_blocks
+        self.max_backoff = max_backoff
+
+        self._running = False
+        self._callbacks: list[Callable[[SyncEvent], Awaitable[None]]] = []
+        self._v3_callbacks: list[Callable[[dict], Awaitable[None]]] = []
+        self._seen: set[str] = set()
+        self._last_block: int | None = None
+        self._events_processed = 0
+
+    def on_sync(self, callback: Callable[[SyncEvent], Awaitable[None]]) -> None:
+        self._callbacks.append(callback)
+
+    def on_v3_swap(self, callback: Callable[[dict], Awaitable[None]]) -> None:
+        self._v3_callbacks.append(callback)
+
+    async def _get_logs(
+        self, topic: str, addresses: list[str], from_block: int, to_block: int
+    ) -> list[dict]:
+        if not addresses:
+            return []
+        filter_obj = {
+            "fromBlock": hex(from_block),
+            "toBlock": hex(to_block),
+            "topics": [topic],
+            "address": addresses,
+        }
+        data = await self.rpc.call("eth_getLogs", [filter_obj])
+        return data.get("result", []) or []
+
+    async def _poll_once(self) -> None:
+        head = await self.rpc.call("eth_blockNumber")
+        head_block = int(head.get("result", "0x0"), 16)
+        if self._last_block is None:
+            from_block = max(0, head_block - self.poll_blocks)
+        else:
+            from_block = self._last_block + 1
+        to_block = head_block
+        if from_block > to_block:
+            return
+        self._last_block = to_block
+
+        # V2 Sync logs.
+        v2_logs = await self._get_logs(
+            self.sync_topic, self.whitelist, from_block, to_block
+        )
+        for log in v2_logs:
+            event = parse_sync_log(log, self.whitelist_set, self._seen)
+            if event is None:
+                continue
+            self._events_processed += 1
+            for cb in self._callbacks:
+                try:
+                    await cb(event)
+                except Exception as e:  # noqa: BLE001
+                    logger.error("Sync callback failed: %s", e)
+
+        # V3 Swap logs.
+        if self.v3_addresses and self._v3_callbacks:
+            v3_logs = await self._get_logs(
+                V3_SWAP_TOPIC, self.v3_addresses, from_block, to_block
+            )
+            for log in v3_logs:
+                if parse_v3_log(log, self.v3_set) is None:
+                    continue
+                self._events_processed += 1
+                for cb in self._v3_callbacks:
+                    try:
+                        await cb(log)
+                    except Exception as e:  # noqa: BLE001
+                        logger.error("V3 Swap callback failed: %s", e)
+
+    async def listen(self) -> None:
+        """Poll forever with bounded backoff on RPC errors."""
+        self._running = True
+        attempt = 0
+        logger.info(
+            "LogsPoller started: interval=%.1fs blocks=%d pools=%d v3=%d",
+            self.poll_interval,
+            self.poll_blocks,
+            len(self.whitelist),
+            len(self.v3_addresses),
+        )
+        while self._running:
+            try:
+                await self._poll_once()
+                attempt = 0
+                await asyncio.sleep(self.poll_interval)
+            except asyncio.CancelledError:
+                break
+            except Exception as e:  # noqa: BLE001
+                if not self._running:
+                    break
+                attempt += 1
+                backoff = min(self.poll_interval * (2 ** (attempt - 1)), self.max_backoff)
+                logger.warning(
+                    "LogsPoller error (%s) — retrying in %.1fs (attempt %d)",
+                    e,
+                    backoff,
+                    attempt,
+                )
+                await asyncio.sleep(backoff)
 
     def stop(self) -> None:
         self._running = False
         logger.info(
-            "WebSocket listener stopped (%d Sync events delivered)",
-            self._events_processed,
+            "LogsPoller stopped (%d Sync events delivered)", self._events_processed
         )

@@ -148,3 +148,78 @@ def test_graph_engine_v2_v3_cycle_end_to_end() -> None:
     assert g.graph.v3_edges["0xp2"].sqrt_price_x96 == int((110.0) ** 0.5 * 2**96)
     assert g.graph.v3_edges["0xp2"].liquidity == 90_000 * E
 
+
+def test_logs_poller_http_transport() -> None:
+    """LogsPoller must fetch V2 Sync + V3 Swap logs via eth_getLogs and feed
+    the same callbacks the WSS listener uses — no live RPC/WSS required."""
+    import asyncio
+    from unittest.mock import MagicMock
+
+    from infra.flea_market_discovery import V2_SYNC_TOPIC, V3_SWAP_TOPIC
+    from infra.websocket_listener import LogsPoller, parse_sync_log
+
+    pool = "0x" + "ab" * 20
+    v3pool = "0x" + "cd" * 20
+
+    sync_log = {
+        "address": pool,
+        "blockNumber": "0x14",
+        "data": "0x" + (123 * E).to_bytes(32, "big").hex()
+        + (456 * E).to_bytes(32, "big").hex(),
+        "topics": [V2_SYNC_TOPIC],
+    }
+    v3_log = _v3_swap_log(v3pool, int((100.0) ** 0.5 * 2**96), 50_000 * E, 7)
+
+    calls: list[str] = []
+
+    class FakeRPC:
+        async def call(self, method, params=None):
+            calls.append(method)
+            if method == "eth_blockNumber":
+                return {"result": "0x20"}
+            if method == "eth_getLogs":
+                filt = params[0]
+                topic = filt["topics"][0]
+                if topic == V2_SYNC_TOPIC:
+                    return {"result": [sync_log]}
+                if topic == V3_SWAP_TOPIC:
+                    return {"result": [v3_log]}
+                return {"result": []}
+            return {"result": "0x0"}
+
+    poller = LogsPoller(
+        rpc_manager=FakeRPC(),  # type: ignore[arg-type]
+        whitelisted_addresses=[pool],
+        v3_addresses=[v3pool],
+        poll_interval=0.01,
+        poll_blocks=5,
+    )
+
+    synced = []
+    v3s = []
+    poller.on_sync(lambda e: synced.append(e))
+    poller.on_v3_swap(lambda l: v3s.append(l))
+
+    async def run() -> None:
+        poller._running = True
+        await poller._poll_once()
+
+    asyncio.run(run())
+
+    assert "eth_getLogs" in calls
+    assert len(synced) == 1
+    assert synced[0].pair_address == pool
+    assert synced[0].reserve0 == 123 * E
+    assert synced[0].reserve1 == 456 * E
+    assert len(v3s) == 1
+    assert v3s[0]["address"] == v3pool
+
+    # Dedup: a second identical poll must not re-emit the same Sync event.
+    async def run2() -> None:
+        poller._running = True
+        await poller._poll_once()
+
+    asyncio.run(run2())
+    assert len(synced) == 1, "duplicate Sync event delivered after dedup"
+
+
