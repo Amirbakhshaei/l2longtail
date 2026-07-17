@@ -55,8 +55,6 @@ async def _run_engine() -> None:
     from infra.websocket_listener import WebSocketListener, LogsPoller
 
     dry_run = os.getenv("DRY_RUN", "true").lower() == "true"
-    trade_size = float(os.getenv("TRADE_SIZE_USD", "10"))
-    min_spread = float(os.getenv("MIN_SPREAD_PCT", "0.5"))
     lookback = int(os.getenv("SYNC_LOOKBACK_BLOCKS", "50"))
     from config.settings import Settings
 
@@ -153,10 +151,11 @@ async def _run_engine() -> None:
 
     mode = "LIVE" if not dry_run else "PAPER"
     logger.info(
-        "Engine starting | mode=%s trade_size=$%.0f min_spread=%.1f%% pools=%d",
-        mode, trade_size, min_spread, flea.pool_count,
+        "[STARTUP] mode=%s | pools=%d | quoting=QuoterV2+Multicall3 | "
+        "capital=uncapped-flashloan | gate=net_wei>gas_wei",
+        mode, flea.pool_count,
     )
-    await tg.notify_engine_start(mode, trade_size, min_spread)
+    await tg.notify_engine_start(mode, flea.pool_count)
 
     async def loop_a() -> None:
         try:
@@ -172,7 +171,13 @@ async def _run_engine() -> None:
             logger.error("Sniper failed: %s", e)
             await tg.notify_error("Process B", str(e))
 
-    await asyncio.gather(loop_a(), loop_b())
+    try:
+        await asyncio.gather(loop_a(), loop_b())
+    finally:
+        # Close the persistent HTTP/2 client so the event loop does not emit
+        # a "ValueError: Invalid file descriptor" traceback on __del__.
+        await rpc.close()
+        logger.info("[SHUTDOWN] RPC client closed, engine stopped")
 
 
 def get_latest_terminal_logs() -> str:

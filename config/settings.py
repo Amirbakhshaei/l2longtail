@@ -30,7 +30,6 @@ class Settings(BaseSettings):
 
     min_liquidity_usd: float = 100.0
     max_liquidity_usd: float = 100000.0
-    min_net_profit_usd: float = 0.50
     gas_baseline_usd: float = 0.02
 
     whitelist_path: str = "config/whitelist.json"

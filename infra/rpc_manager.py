@@ -5,6 +5,7 @@ import logging
 from typing import Any
 
 import httpx
+import orjson
 
 from infra.rate_limiter import TokenBucketRateLimiter
 
@@ -62,8 +63,16 @@ class RPCManager:
     async def _http_post(
         self, url: str, method: str, params: list[Any]
     ) -> dict[str, Any]:
-        payload = {"jsonrpc": "2.0", "method": method, "params": params, "id": 1}
-        response = await self._client.post(url, json=payload)
+        # orjson serializes the JSON-RPC envelope faster than the stdlib
+        # json encoder, reducing CPU overhead during high-frequency polling.
+        payload = orjson.dumps(
+            {"jsonrpc": "2.0", "method": method, "params": params, "id": 1}
+        )
+        response = await self._client.post(
+            url,
+            content=payload,
+            headers={"Content-Type": "application/json"},
+        )
 
         if response.status_code >= 400:
             logger.error(
@@ -71,7 +80,7 @@ class RPCManager:
             )
 
         response.raise_for_status()
-        data: dict[str, Any] = response.json()
+        data: dict[str, Any] = orjson.loads(response.content)
         if "error" in data:
             raise RuntimeError(f"RPC error: {data['error']}")
         return data

@@ -1,291 +1,133 @@
-# Long-Tail Arbitrage System — Agent Architecture Contract
-
-> **Network:** Arbitrum One (L2)  
-> **Execution Model:** Asynchronous non-blocking DAG with shared typed state  
-> **Token Policy:** Zero conversational overhead — all agent I/O is strict JSON
-
----
-
-## 1. System Architecture & Topology
-
-### 1.1 Directed Acyclic Graph (DAG) Flow
-
-```
-┌─────────────┐     ┌──────────────────────┐     ┌─────────────────────┐     ┌──────────────────────┐
-│  INGESTION  │────▶│  A. FILTER GATE      │────▶│  B. SMART CONTRACT  │────▶│  C. SLIPPAGE & QUANT │
-│  (upstream) │     │  (Programmatic       │     │     AUDITOR         │     │     ANALYST          │
-│             │     │   Firewall)          │     │  (Scam Detection)   │     │  (Math Validator)    │
-└─────────────┘     └──────────────────────┘     └─────────────────────┘     └──────────────────────┘
-                                                                       │
-                                                                       ▼
-                                                            ┌──────────────────────┐
-                                                            │  D. EXECUTION        │
-                                                            │     GATEKEEPER       │
-                                                            │  (Settlement Auth)   │
-                                                            └──────────────────────┘
-```
+# L2 Long-Tail MEV: AI Agent Directives
 
-**Routing Rules:**
-- Any node may mutate `state.status = "ABORTED"` with a `reason` string — this short-circuits all downstream nodes.
-- No node may skip or reorder. Each node reads the mutated state from its predecessor.
+## 1. Core Objective & Philosophy
+This codebase is a production-grade MEV (Miner Extractable Value) extraction engine operating on the Arbitrum Long-Tail. 
+* **Optimize for:** Leverage, ROI, execution speed, and EV (Expected Value) precision.
+* **Avoid:** Premature optimization, artificial heuristics, and local simulation of complex EVM state machines.
 
-### 1.2 Shared State Schema
+## 2. Architectural Invariants
 
-```python
-from pydantic import BaseModel, Field
-from typing import Optional, List
-from enum import Enum
+### 2.1. Pricing & Simulation (V3 Geometry)
+* **DO NOT** attempt to write, integrate, or simulate Uniswap V3 tick math locally in Python. 
+* All V3 pricing evaluation must be routed through the On-Chain Grid Search infrastructure (`infra/onchain_pricing.py`).
+* We rely exclusively on the `Multicall3` contract wrapping the Uniswap V3 `QuoterV2` to batch-simulate exact input-to-output yields on the EVM directly. 
+* V3 Paths must always be byte-packed accurately using `eth_abi.packed.encode_packed` matching the `[Token, Fee, Token]` layout.
 
-class Status(str, Enum):
-    PENDING = "PENDING"
-    FILTERED = "FILTERED"
-    AUDITED = "AUDITED"
-    VALIDATED = "VALIDATED"
-    AUTHORIZED = "AUTHORIZED"
-    ABORTED = "ABORTED"
-    EXECUTED = "EXECUTED"
-
-class ArbitrageState(BaseModel):
-    # Identity
-    run_id: str
-    token_address: str
-    pool_address: str
+### 2.2. Capital Sizing & Constraints
+* **DO NOT** use static heuristics like `trade_size_usd = 10` or `min_spread_pct = 0.5`. Flashloans provide unconstrained capital.
+* Arbitrage sizing is exclusively determined dynamically via the `Multicall3` grid search array (e.g., `[0.1, 0.5, 1.0, 5.0, 10.0]` WETH).
+* The absolute and only validation gate for execution is positive Expected Value (EV): 
+  `if (amount_out_wei - amount_in_wei) > estimated_gas_cost_wei: execute()`
 
-    # Ingested data
-    liq_usd: float
-    is_verified: bool
-    gross_spread_pct: float
-    trade_size_usd: float
-    pool_reserve_usd: float
-    gas_usd: float = Field(default=0.02, description="L2 Arbitrum baseline gas overhead")
+### 2.3. Network Transport & Error Handling
+* We utilize high-frequency HTTP polling against standard RPCs. 
+* **DO NOT** catch generic or invalid exceptions (e.g., `BaseException`, raw strings, or module names) in network loops. 
+* All `try...except` blocks wrapping RPC calls must specifically target connection/timeout objects (e.g., `httpx.RequestError`, `asyncio.TimeoutError`, `aiohttp.ClientError`).
+* Network resets (HTTP/2 stream drops) must be caught silently, ignored, and reconnected without crashing the primary thread.
 
-    # Contract audit
-    minified_source: Optional[str] = None
-    audit_is_safe: Optional[bool] = None
-    audit_threats: Optional[List[str]] = None
+## 3. Telemetry & Observability
+Standard `print` or generic `INFO` logs are unacceptable for process evaluations. Every cycle evaluated by `ProcessBSniper` must output a strict, multi-line telemetry block containing:
+1. **[ROUTE]** The exact geometric path and fee tiers.
+2. **[LATENCY]** Sub-millisecond timing of the RPC round-trip.
+3. **[GRID]** The raw input-to-output matrix of the Multicall probe.
+4. **[ECONOMICS]** Absolute wei accounting of Gross Revenue, Est. Gas Cost, and Net EV.
+5. **[DECISION]** The deterministic action taken (`EXECUTE` or `REJECT` with reason).
 
-    # Quant validation
-    expected_slippage_pct: Optional[float] = None
-    net_profit_usd: Optional[float] = None
+## 4. Coding Standards
+* Write production-quality, asynchronous Python.
+* Prioritize readability and modularity.
+* Provide clean type-hints for all function parameters and returns.
+* When adding features, do not import bloated libraries if standard libraries or lightweight asynchronous alternatives exist.
 
-    # Execution
-    tx_hash: Optional[str] = None
+ AGENTS.md
 
-    # Control
-    status: Status = Status.PENDING
-    reason: Optional[str] = None
-```
+This file provides guidance to AI coding agents (Claude Code, Cursor, Copilot, Antigravity, etc.) when working with code in this repository.
 
-### 1.3 System-Wide Execution Constraints
+> **Scope:** This file configures agents working on the [`addyosmani/agent-skills`](https://github.com/addyosmani/agent-skills) repository itself. It is not meant to be copied into other projects or into a global agent configuration; the reusable assets are the skills in `skills/`, not this file.
 
-- **Async non-blocking:** All nodes run as independent coroutines; no node blocks the event loop.
-- **L2 low-latency path:** All RPC calls target Arbitrum One private endpoints. Gas baseline is hardcoded at `$0.02`.
-- **Zero conversational overhead:** Every LLM call must include a system prompt that forbids prose. Responses are parsed as JSON; any parse failure triggers immediate `ABORTED`.
-- **Deterministic-first:** All numerical checks (liquidity, verification, blacklist, slippage, profit floor) are executed in local code **before** any LLM invocation.
+## Repository Overview
 
----
+A collection of skills for Claude.ai and Claude Code for senior software engineers. Skills are packaged instructions and scripts that extend Claude and your coding agents capabilities.
 
-## 2. Token-Efficiency & Pre-Filtering Protocol
+## OpenCode Integration
 
-### 2.1 Token Economy Rules
+OpenCode uses a **skill-driven execution model** powered by the `skill` tool and this repository's `/skills` directory.
 
-1. **Never send raw contract source to an LLM.** Always run the [Code Minifier](Skills/code_minifier/skill.md) first.
-2. **Never invoke an LLM for numerical comparisons.** Liquidity, verification, slippage, and profit checks are local `if` statements.
-3. **Batch state reads.** Each node reads the full state once at entry, mutates its fields, and writes back. No incremental field reads.
-4. **Abort early.** If any deterministic check fails, set `status = ABORTED` and terminate the graph instance immediately. Do not call downstream LLMs.
+### Core Rules
 
-### 2.2 Pre-Filtering Execution Order
+- If a task matches a skill, you MUST invoke it
+- Skills are located in `skills/<skill-name>/SKILL.md`
+- Never implement directly if a skill applies
+- Always follow the skill instructions exactly (do not partially apply them)
 
-```
-1. is_verified == False?  →  ABORT("unverified contract")
-2. liq_usd < 2500?        →  ABORT("insufficient liquidity")
-3. token_address in blacklist?  →  ABORT("blacklisted address")
-4. All pass  →  proceed to LLM audit node
-```
+### Intent → Skill Mapping
 
-### 2.3 Source Code Minification
+The agent should automatically map user intent to skills:
 
-Before passing contract source to the auditor agent, apply the minifier defined in [`Skills/code_minifier/skill.md`](Skills/code_minifier/skill.md):
+- Feature / new functionality → `spec-driven-development`, then `incremental-implementation`, `test-driven-development`
+- Planning / breakdown → `planning-and-task-breakdown`
+- Bug / failure / unexpected behavior → `debugging-and-error-recovery`
+- Code review → `code-review-and-quality`
+- Refactoring / simplification → `code-simplification`
+- API or interface design → `api-and-interface-design`
+- UI work → `frontend-ui-engineering`
 
-1. Strip all `// ...` and `/* ... */` comments.
-2. Remove `pragma solidity ...` directives and `interface` / `abstract` descriptors.
-3. Collapse all whitespace (tabs, newlines, consecutive spaces) into single spaces.
-4. Verify compressed payload is ≥ 60% smaller than raw input. If not, log a warning but proceed.
+### Lifecycle Mapping (Implicit Commands)
 
----
+OpenCode does not support slash commands like `/spec` or `/plan`.
 
-## 3. Agent Profiles
+Instead, the agent must internally follow this lifecycle:
 
----
+- DEFINE → `spec-driven-development`
+- PLAN → `planning-and-task-breakdown`
+- BUILD → `incremental-implementation` + `test-driven-development`
+- VERIFY → `debugging-and-error-recovery`
+- REVIEW → `code-review-and-quality`
+- SHIP → `shipping-and-launch`
 
-### A. Filter Gate Agent (Programmatic Firewall)
+### Execution Model
 
-**Core Role:** Deterministic data screening — no LLM involved.
+For every request:
 
-**Input State Fields:**
-- `token_address: str`
-- `pool_address: str`
-- `liq_usd: float`
-- `is_verified: bool`
+1. Determine if any skill applies (even 1% chance)
+2. Invoke the appropriate skill using the `skill` tool
+3. Follow the skill workflow strictly
+4. Only proceed to implementation after required steps (spec, plan, etc.) are complete
 
-**Operational Directives:**
+### Anti-Rationalization
 
-1. Check `is_verified`. If `False`, write `state.status = ABORTED`, `state.reason = "unverified contract bytecode"`, and terminate.
-2. Check `liq_usd >= 2500.0`. If `False`, write `state.status = ABORTED`, `state.reason = f"liquidity ${liq_usd:.2f} below $2500 floor"`, and terminate.
-3. Check `token_address` against the local blacklist set. If found, write `state.status = ABORTED`, `state.reason = "blacklisted token address"`, and terminate.
-4. If all checks pass, mutate `state.status = FILTERED` and route to Agent B.
+The following thoughts are incorrect and must be ignored:
 
-**State Mutation:**
-```python
-state.status = Status.FILTERED  # on success
-# or
-state.status = Status.ABORTED
-state.reason = "..."            # on failure
-```
+- "This is too small for a skill"
+- "I can just quickly implement this"
+- "I’ll gather context first"
 
----
+Correct behavior:
 
-### B. Smart Contract Auditor Agent (Scam Detection Engine)
+- Always check for and use skills first
 
-**Core Role:** Structural security and honeypot detection via LLM reasoning.
+This ensures OpenCode behaves similarly to Claude Code with full workflow enforcement.
 
-**Input State Fields:**
-- `token_address: str` (used to fetch source via Etherscan MCP)
+## Orchestration: Personas, Skills, and Commands
 
-**Pre-Processing:** Fetch source code via Etherscan MCP endpoint, then run the [Code Minifier](Skills/code_minifier/skill.md) to produce `state.minified_source`.
+This repo has three composable layers. They have different jobs and should not be confused:
 
-**System Prompt (Gemini API):**
+- **Skills** (`skills/<name>/SKILL.md`) — workflows with steps and exit criteria. The *how*. Mandatory hops when an intent matches.
+- **Personas** (`agents/<role>.md`) — roles with a perspective and an output format. The *who*.
+- **Slash commands** (`.claude/commands/*.md`) — user-facing entry points. The *when*. The orchestration layer.
 
-```
-You are a Solidity security auditor. You will receive minified smart contract source code.
+Composition rule: **the user (or a slash command) is the orchestrator. Personas do not invoke other personas.** A persona may invoke skills.
 
-Your task: inspect the code for the following vulnerability classes:
-1. Hidden transfer taxes (fees deducted on every transfer that are not disclosed)
-2. Malicious mint mechanisms (unrestricted or owner-only minting that dilutes holders)
-3. Freeze or blacklist parameters (functions that can lock user funds or block transfers)
-4. Balance modification vulnerabilities (direct balance manipulation outside of standard transfer logic)
-5. Honeypot patterns (buy allowed, sell blocked or heavily penalized)
+The only multi-persona orchestration pattern this repo endorses is **parallel fan-out with a merge step** — used by `/ship` to run `code-reviewer`, `security-auditor`, and `test-engineer` concurrently and synthesize their reports. Do not build a "router" persona that decides which other persona to call; that's the job of slash commands and intent mapping.
 
-You must respond with a single valid JSON object matching this schema:
-{
-  "is_safe": boolean,
-  "threats": [string]
-}
+See [docs/agents.md](docs/agents.md) for the decision matrix and [references/orchestration-patterns.md](references/orchestration-patterns.md) for the full pattern catalog.
 
-- "is_safe" is true only if NONE of the above vulnerability classes are detected.
-- "threats" is a list of short strings describing each detected vulnerability. Empty list if none.
+**Claude Code interop:** the personas in `agents/` work as Claude Code subagents (auto-discovered from this plugin's `agents/` directory) and as Agent Teams teammates (referenced by name when spawning). Two platform constraints align with our rules: subagents cannot spawn other subagents, and teams cannot nest. Plugin agents silently ignore the `hooks`, `mcpServers`, and `permissionMode` frontmatter fields.
 
-RULES:
-- Output ONLY the JSON object. No markdown, no explanation, no prose, no code fences.
-- If the code is too short or empty to audit, set is_safe=false and threats=["insufficient source code"].
-```
+## Creating a New Skill
 
-**Output Pydantic Schema:**
+> **Before you start:** run the pre-flight checks in [CONTRIBUTING.md](CONTRIBUTING.md#before-proposing-a-new-skill), search the catalog, check open PRs (`gh pr list --state open`), confirm the idea fits [docs/skill-anatomy.md](docs/skill-anatomy.md), and justify the gap in your PR description. Most new-skill ideas overlap an existing skill or an open PR; prefer extending an existing skill over adding a near-duplicate. CONTRIBUTING.md is the single source of truth for this workflow.
 
-```python
-class AuditResult(BaseModel):
-    is_safe: bool
-    threats: List[str]
-```
+Skills in this repo are markdown-first: each lives at `skills/<kebab-case-name>/SKILL.md` with YAML frontmatter (`name`, `description`) and follows the section anatomy (Overview, When to Use, Process, Common Rationalizations, Red Flags, Verification). Add a `scripts/` directory only when the skill ships runnable helpers; most skills are markdown only, and there are no per-skill zip packages.
 
-**State Mutation:**
-- Parse the LLM response into `AuditResult`.
-- If `is_safe == False`: `state.status = ABORTED`, `state.reason = f"audit failed: {threats}"`.
-- If `is_safe == True`: `state.audit_is_safe = True`, `state.audit_threats = []`, `state.status = AUDITED`.
-
----
-
-### C. Slippage & Quant Analyst Agent (Mathematical Validator)
-
-**Core Role:** Mechanical evaluation of execution decay and fee-adjusted margins — no LLM involved.
-
-**Input State Fields:**
-- `trade_size_usd: float`
-- `pool_reserve_usd: float` (equivalent to pool liquidity)
-- `gross_spread_pct: float`
-- `gas_usd: float` (default: `0.02`)
-
-**Mathematical Invariants (executed locally):**
-
-$$
-\text{Expected Slippage \%} = \left( \frac{\text{Trade Size USD}}{\text{Pool Liquidity USD}} \right) \times 100
-$$
-
-$$
-\text{Net Profit USD} = \left( \frac{\text{Gross Spread \%} - \text{Expected Slippage \%}}{100} \right) \times \text{Trade Size USD} - \text{Gas USD}
-$$
-
-**Implementation:**
-
-```python
-expected_slippage_pct = (state.trade_size_usd / state.pool_reserve_usd) * 100
-net_profit_usd = ((state.gross_spread_pct - expected_slippage_pct) / 100) * state.trade_size_usd - state.gas_usd
-```
-
-**Validation Bounds:**
-- `gas_usd` baseline: `$0.02` (Arbitrum One L2 hardcoded).
-- Execution floor: `net_profit_usd >= 0.50`.
-
-**State Mutation:**
-- If `net_profit_usd < 0.50`: `state.status = ABORTED`, `state.reason = f"net profit ${net_profit_usd:.4f} below $0.50 floor"`.
-- If `net_profit_usd >= 0.50`: `state.expected_slippage_pct = expected_slippage_pct`, `state.net_profit_usd = net_profit_usd`, `state.status = VALIDATED`.
-
----
-
-### D. Execution Gatekeeper Agent (Secure Settlement Engine)
-
-**Core Role:** Final risk validation and transaction routing authorization.
-
-**Input State Fields:**
-- `state.status` (must be `VALIDATED`)
-- `state.audit_is_safe` (must be `True`)
-- `state.net_profit_usd` (must be `>= 0.50`)
-- `state.token_address`
-- `state.pool_address`
-- `state.trade_size_usd`
-
-**Operational Directives:**
-
-1. Verify `state.status == VALIDATED`. If not, `ABORT("invalid upstream state")`.
-2. Verify `state.audit_is_safe == True`. If not, `ABORT("audit not passed")`.
-3. Verify `state.net_profit_usd >= 0.50`. If not, `ABORT("profit below execution floor")`.
-4. If all checks pass:
-   - Mutate `state.status = AUTHORIZED`.
-   - Invoke the local transaction builder to construct, sign, and submit the swap transaction.
-   - Route via **private RPC bundle relay** (e.g., Flashbots Protect or Arbitrum private mempool) to bypass public mempool sandwich attacks.
-   - On successful submission: `state.tx_hash = "<tx_hash>"`, `state.status = EXECUTED`.
-   - On failure: `state.status = ABORTED`, `state.reason = "tx submission failed: <error>"`.
-5. If any check fails, terminate the state and wipe all in-memory buffers holding contract source or trade parameters.
-
-**State Mutation:**
-```python
-state.status = Status.AUTHORIZED  # pre-tx
-# ... sign and submit ...
-state.status = Status.EXECUTED
-state.tx_hash = "0x..."
-# or
-state.status = Status.ABORTED
-state.reason = "..."
-```
-
----
-
-## 4. Operational Quick Reference
-
-| Check | Type | Threshold | Node |
-|---|---|---|---|
-| `is_verified` | boolean | `True` | A |
-| `liq_usd` | float | `>= $2,500` | A |
-| blacklist match | set lookup | not found | A |
-| `audit_is_safe` | boolean | `True` | B |
-| `net_profit_usd` | float | `>= $0.50` | C |
-| `gas_usd` baseline | float | `$0.02` | C |
-
-**Command to run full pipeline (when implemented):**
-```bash
-python -m longtail.pipeline --run-id <id> --token <address> --pool <address>
-```
-
-**Key directories:**
-- `Skills/` — Agent skill definitions (minifier, filter gate, slippage math)
-- `longtail/` — Core pipeline code (to be implemented)
+For the full format, naming conventions, frontmatter rules, supporting-file thresholds, and writing principles, see [docs/skill-anatomy.md](docs/skill-anatomy.md), the single source of truth for skill structure. Do not restate that guidance here, link to it.

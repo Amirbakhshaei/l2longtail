@@ -69,8 +69,6 @@ def write_results_to_csv(results: list[dict], file_path: Path) -> None:
 async def main() -> None:
     dry_run = os.getenv("DRY_RUN", "true").lower() == "true"
     duration = int(os.getenv("SCAN_DURATION", "300"))
-    trade_size = float(os.getenv("TRADE_SIZE_USD", "10"))
-    min_spread = float(os.getenv("MIN_SPREAD_PCT", "0.5"))
     lookback = int(os.getenv("SYNC_LOOKBACK_BLOCKS", "50"))
 
     ankr_key = os.getenv("ANKR_API_KEY", "")
@@ -137,9 +135,8 @@ async def main() -> None:
     print("\nGRAPH ARBITRAGE SYSTEM (SYNC ENGINE)")
     print(f"  Mode:        {'PAPER' if dry_run else 'LIVE'}")
     print(f"  Duration:    {duration}s")
-    print(f"  Trade size:  ${trade_size:.0f}")
-    print(f"  Min spread:  {min_spread:.1f}%")
     print(f"  Pools:       {flea.pool_count}")
+    print(f"  Quoting:     QuoterV2 + Multicall3 (on-chain grid search)")
     print(f"  Transport:   {sync_transport}")
     print(f"  Vault:       {vault_address}")
     print(f"  Executor:    {executor_address or 'NOT DEPLOYED'}")
@@ -174,7 +171,7 @@ async def main() -> None:
     signal.signal(signal.SIGTERM, _handle_signal)
 
     await tg.notify_engine_start(
-        "PAPER" if dry_run else "LIVE", trade_size, min_spread
+        "PAPER" if dry_run else "LIVE", flea.pool_count
     )
 
     async def flush_notifications():

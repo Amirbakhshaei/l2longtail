@@ -457,14 +457,12 @@ class FlashloanExecutor:
         executor_address: str = "",
         weth_address: str = WETH_ADDRESS,
         dry_run: bool = True,
-        min_net_profit_usd: float = 0.50,
     ) -> None:
         self.rpc = rpc_manager
         self.vault = vault_address
         self.executor = executor_address
         self.weth = weth_address
         self.dry_run = dry_run
-        self.min_net_profit_usd = min_net_profit_usd
         self._compute_selectors()
 
     def _compute_selectors(self) -> None:
@@ -620,7 +618,6 @@ class GraphArbEngine:
             executor_address,
             weth_address,
             dry_run,
-            min_net_profit_usd=0.0,
         )
         # On-chain quoting via QuoterV2 + Multicall3 replaces local tick math.
         self.quoter = OnChainQuoter(rpc_manager)

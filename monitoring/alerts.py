@@ -32,14 +32,18 @@ class TelegramAlerts:
 
     # ---- Formatted notification methods ----
 
-    async def notify_engine_start(self, mode: str, trade_size: float, min_spread: float) -> None:
+    async def notify_engine_start(self, mode: str, pools: int, whitelist_bounds: str = "") -> None:
         msg = (
             f"<b>Engine Started</b>\n"
             f"Mode: <code>{mode}</code>\n"
-            f"Trade size: <code>${trade_size:.0f}</code>\n"
-            f"Min spread: <code>{min_spread:.1f}%</code>\n"
-            f"Time: <code>{time.strftime('%Y-%m-%d %H:%M:%S')}</code>"
+            f"Pools: <code>{pools}</code>\n"
+            f"Quote: <code>QuoterV2 + Multicall3 (on-chain grid search)</code>\n"
+            f"Capital: <code>uncapped flashloan</code>\n"
+            f"Gate: <code>net_wei &gt; gas_wei</code>\n"
         )
+        if whitelist_bounds:
+            msg += f"Liquidity: <code>{whitelist_bounds}</code>\n"
+        msg += f"Time: <code>{time.strftime('%Y-%m-%d %H:%M:%S')}</code>"
         await self.send_telegram(msg)
 
     async def notify_engine_stop(
