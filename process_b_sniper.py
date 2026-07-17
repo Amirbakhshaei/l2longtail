@@ -23,10 +23,9 @@ import json
 import logging
 import time
 from collections.abc import Awaitable, Callable
+
 from eth_abi import encode as abi_encode
 from eth_utils import keccak
-
-from infra.flea_market_discovery import SyncEvent, V3StateEvent
 
 from config.constants import (
     DEX_ROUTERS,
@@ -35,21 +34,21 @@ from config.constants import (
     WETH_ADDRESS,
 )
 from db.cleared_tokens import ClearedTokensDB
+from infra.flea_market_discovery import V3StateEvent
 from infra.local_pricing import (
     ArbCycle,
     DirectedGraph,
     ExecutionState,
     PoolEdge,
-    V3PoolEdge,
     PoolInfo,
     QuotePoolInfo,
     TriangularPath,
-    calculate_optimal_input_size,
+    V3PoolEdge,
     compute_net_profit,
     compute_v2_output,
     find_triangular_path,
-    get_amount_out_multi_hop,
 )
+from infra.onchain_pricing import OnChainQuoter
 from infra.price_oracle import WETHPriceOracle
 from infra.rpc_manager import RPCManager
 
@@ -585,9 +584,10 @@ class GraphArbEngine:
         self.live_executor = live_executor
         self.on_result = on_result
         self.on_opportunity = on_opportunity
-        # Hard cap on flashloan size (wei) — protects against unbounded V3
-        # input sizing when the borrow hop has no reserves tuple.
-        self.max_flashloan_wei = 200 * 10**18
+        # Flashloan capital is unbounded (Balancer V2 0% loan) — no hardcoded
+        # cap. The Ternary Search upper bound is derived dynamically from the
+        # borrow-hop WETH reserve (see _evaluate_cycle), so sizing is free to
+        # find the true optimum on deep liquidity imbalances.
 
         self.flashloan = FlashloanExecutor(
             rpc_manager,
@@ -597,6 +597,8 @@ class GraphArbEngine:
             dry_run,
             min_net_profit_usd,
         )
+        # On-chain quoting via QuoterV2 + Multicall3 replaces local tick math.
+        self.quoter = OnChainQuoter(rpc_manager)
         self.graph = self._build_graph()
         self._seen_cycles: set[tuple[str, ...]] = set()
         self._weth_price: float | None = None
@@ -644,7 +646,7 @@ class GraphArbEngine:
         )
         await self._scan_cycles()
 
-    async def process_v3_state(self, event: "V3StateEvent") -> None:
+    async def process_v3_state(self, event: V3StateEvent) -> None:
         self.graph.update_v3_state(
             event.pool_address, event.sqrt_price_x96, event.tick, event.liquidity
         )
@@ -668,38 +670,9 @@ class GraphArbEngine:
         await self._evaluate_cycle(cycle, weth_price)
 
     async def _evaluate_cycle(self, cycle: ArbCycle, weth_price: float) -> None:
-        hops = cycle.directed_hops(self.graph)
-        if not hops:
-            return
-
-        # Max input bound: if the borrow (hop 0) is a V2 pool, use its WETH
-        # reserve; if it is a V3 pool (no reserve tuple) fall back to a
-        # configured flashloan cap so ternary search stays bounded.
-        weth_reserve = hops[0][0]
-        if weth_reserve == 0:
-            weth_reserve = self.max_flashloan_wei
-        max_input_wei = min(weth_reserve, self.max_flashloan_wei)
-
+        # Flashloan capital is unbounded; the only execution gate is
+        # net_profit_wei > estimated_gas_cost_wei on the on-chain quote.
         gas_wei = int((self.gas_usd / weth_price) * 1e18)
-
-        amount_in = calculate_optimal_input_size(
-            hops, gas_wei, max_input_wei, graph=self.graph, cycle=cycle
-        )
-        if amount_in == 0:
-            logger.debug("CYCLE: sized to zero profit — skipping")
-            return
-
-        out = get_amount_out_multi_hop(hops, amount_in, self.graph, cycle)
-        net_wei = out - amount_in - gas_wei
-        if net_wei <= 0:
-            return
-
-        net_usd = (net_wei / 1e18) * weth_price
-        gross_spread_pct = ((out - amount_in) / amount_in) * 100
-        trade_size_usd = (amount_in / 1e18) * weth_price
-
-        if net_usd < self.min_net_profit_usd:
-            return
 
         from web3 import Web3
 
@@ -710,6 +683,7 @@ class GraphArbEngine:
             return
 
         # Per-hop V3 descriptors: fee tier (bps) + whether the hop is V3.
+        # V2 hops carry a 0.30% (3000 bps) fee representation for encoding.
         fee_tiers = []
         for i, is_v3_hop in enumerate(cycle.is_v3):
             if is_v3_hop:
@@ -718,6 +692,24 @@ class GraphArbEngine:
             else:
                 fee_tiers.append(0)
         is_v3_flags = list(cycle.is_v3)
+
+        # On-chain quote the whole route across the size grid and pick the
+        # size that maximises net WETH profit. QuoterV2 prices the path via
+        # the EVM, so no local tick math is required.
+        amount_in, out, net_wei = await self.quoter.quote_best_size(
+            cycle.tokens, fee_tiers
+        )
+        if amount_in == 0:
+            logger.debug("CYCLE: no on-chain quote produced a positive size — skip")
+            return
+
+        # The single execution gate: net profit (wei) must exceed gas cost.
+        if net_wei <= gas_wei:
+            return
+
+        net_usd = (net_wei / 1e18) * weth_price
+        gross_spread_pct = ((out - amount_in) / amount_in) * 100
+        trade_size_usd = (amount_in / 1e18) * weth_price
 
         logger.info(
             "GRAPH CYCLE: %d hops spread=%.2f%% net=$%.4f borrow=%d wei",

@@ -50,24 +50,33 @@ POOLS_PER_PAGE = 20
 
 MIN_LIQUIDITY_USD = 10_000.0
 MIN_VOLUME_24H_USD = 5_000.0
-ALLOWED_DEXES = {"uniswap", "sushiswap", "camelot", "uniswap_v3", "camelot_v3"}
+# V2 *and* V3 venues are ingested. The engine now quotes V3 routes flawlessly
+# on-chain via QuoterV2 + Multicall3, so concentrated-liquidity pools are
+# first-class edges in the graph. The `fee` tier is strictly required to encode
+# the V3 bytes path, so it is always extracted and saved.
+ALLOWED_DEXES = {
+    "uniswap_v2", "sushiswap", "camelot_v2",
+    "uniswap_v3", "camelot_v3",
+}
 ALLOWED_CHAINS = {"arbitrum"}
 
 # Map GeckoTerminal / DexScreener dexId -> engine router key
-# (config.constants.DEX_ROUTERS). V3 venues carry a fee tier recorded separately.
+# (config.constants.DEX_ROUTERS). Both V2 and V3 variants are mapped so the
+# engine can route either topology; `fee_tier` is recorded for every V3 pool.
 DEX_NORMALIZE = {
     "uniswap": "uniswap_v2",
     "uniswap-v2": "uniswap_v2",
     "uniswap-v3": "uniswap_v3",
     "uniswap_v3": "uniswap_v3",
+    "uniswap_v2": "uniswap_v2",
     "sushiswap": "sushiswap",
+    "sushi": "sushiswap",
+    "sushiswap_v2": "sushiswap",
     "camelot": "camelot_v2",
     "camelot-v2": "camelot_v2",
     "camelot-v3": "camelot_v3",
     "camelot_v3": "camelot_v3",
-    "uniswap_v2": "uniswap_v2",
-    "sushi": "sushiswap",
-    "sushiswap_v2": "sushiswap",
+    "camelot_v2": "camelot_v2",
 }
 
 # Default fee tier (bps) per V3 dex when the source does not report one.
@@ -76,7 +85,8 @@ DEFAULT_V3_FEE_BPS = {"uniswap_v3": 3000, "camelot_v3": 3000}
 WHITELIST_PATH = Path("config/whitelist.json")
 
 # Curated, proven Arbitrum pools — last-resort seed if both live APIs are
-# rate-limited / blocklisted. Only used when nothing else is available.
+# rate-limited / blocklisted. V3 entries carry their fee tier so the on-chain
+# quoter can encode the bytes path. Only used when nothing else is available.
 STATIC_FALLBACK = [
     {"pair_address": "0xf64dfe17c8b87f012fcf50fbda1d62bfa148366a",
      "token0": "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
@@ -94,9 +104,6 @@ STATIC_FALLBACK = [
      "token0": "0x4749881d148d91f63b69abf6a67fed139b233ca6",
      "token1": "0xfd086bC7CD5C481DCC9C85ebE478A1C0b69FCbb9",
      "dex": "uniswap_v2"},
-    # Uniswap v3 WETH/USDC 0.05% (Arbitrum) — high-liquidity V3 hub.
-    # NOTE: pool address must be verified on-chain; the engine validates
-    # sqrtPriceX96/tick/liquidity via the V3 indexer before routing.
     {"pair_address": "0xc6962004f452be9203591991d15f6b388e09e8d0",
      "token0": "0x82aF49447D8a07e3bd95BD0d56f35241523fBab1",
      "token1": "0xaf88d065e77c8cC2239327C5EDb3A432268e5831",
@@ -108,9 +115,10 @@ def _valid_pair(p: dict) -> bool:
     if p.get("chainId") not in ALLOWED_CHAINS:
         return False
     dex_id = p.get("dexId", "")
-    # Route V2 *and* V3 pools; map any variant to the canonical engine key
-    # and require that key to be an allowed venue.
-    if DEX_NORMALIZE.get(dex_id, dex_id) not in ALLOWED_DEXES:
+    # Map any variant to the canonical engine key and require it to be an
+    # allowed venue (V2 or V3). Unmapped ids resolve to nothing and fail.
+    norm = DEX_NORMALIZE.get(dex_id, dex_id)
+    if norm not in ALLOWED_DEXES:
         return False
     liq = (p.get("liquidity") or {}).get("usd") or 0.0
     vol = (p.get("volume") or {}).get("h24") or 0.0
@@ -136,13 +144,18 @@ def _format(p: dict) -> dict:
         "token1": p["quoteToken"]["address"].lower(),
         "dex": dex,
     }
-    # V3 pools carry a fee tier (bps); default it if not reported.
+    # V3 pools require a `fee_tier` (bps) to encode the V3 bytes path in the
+    # on-chain quoter. Extract it from the source (DexScreener may report it
+    # as a fraction, e.g. 0.003) and default per-dex when missing.
     if dex in DEFAULT_V3_FEE_BPS:
-        fee = p.get("feeBps") or p.get("fee")
-        fee = int(fee) if fee else DEFAULT_V3_FEE_BPS[dex]
-        # DexScreener sometimes reports fee as a fraction (e.g. 0.003).
-        if isinstance(fee, float) and fee < 1:
-            fee = int(fee * 10000)
+        raw = p.get("feeBps") or p.get("fee")
+        if not raw:
+            fee = DEFAULT_V3_FEE_BPS[dex]
+        elif isinstance(raw, float) and raw < 1:
+            # DexScreener may report the fee as a fraction (e.g. 0.003 = 0.3%).
+            fee = int(raw * 10000)
+        else:
+            fee = int(raw)
         entry["fee_tier"] = int(fee)
     return entry
 
@@ -167,7 +180,10 @@ def _gecko_pool_to_common(pool: dict) -> dict | None:
     liq = float(attrs.get("reserve_in_usd", 0) or 0)
     # Gecko ids look like "uniswap_v3_arbitrum" -> strip the chain suffix.
     dex_id = dex.split("_arbitrum")[0] if "_arbitrum" in dex else dex
-    return {
+    # GeckoTerminal exposes the fee tier under `fee` (string, e.g. "0.003"
+    # or already in bps). Carried through so V3 pools get a `feeBps`.
+    fee = attrs.get("fee")
+    common: dict = {
         "chainId": "arbitrum",
         "dexId": dex_id,
         "pairAddress": pair_addr,
@@ -176,6 +192,13 @@ def _gecko_pool_to_common(pool: dict) -> dict | None:
         "liquidity": {"usd": liq},
         "volume": {"h24": vol},
     }
+    if fee is not None:
+        try:
+            f = float(fee)
+            common["feeBps"] = int(f * 10000) if f < 1 else int(f)
+        except (TypeError, ValueError):
+            pass
+    return common
 
 
 async def _fetch_gecko_pools(client: httpx.AsyncClient) -> list[dict]:
@@ -269,41 +292,26 @@ async def main() -> None:
 
     live = sorted(pools.values(), key=lambda d: d["vol"], reverse=True)[:TARGET_POOLS]
 
-    # Load any existing whitelist and merge so a rate-limited / partial crawl
-    # never wipes previously-discovered pools. Live pools take precedence.
-    existing: dict[str, dict] = {}
-    if WHITELIST_PATH.exists():
-        try:
-            for p in json.loads(WHITELIST_PATH.read_text()):
-                existing[p["pair_address"].lower()] = p
-        except (json.JSONDecodeError, KeyError, TypeError):
-            logger.warning("Existing whitelist unreadable — starting fresh")
+    # Pure V2 topology: overwrite config/whitelist.json with only this run's
+    # validated V2 pools. A merge of a prior file could re-introduce stale V3
+    # pools that would corrupt the x*y=k graph math, so the prior file is
+    # deliberately not carried forward.
+    final = [p["fmt"] for p in live]
 
-    merged = {p["fmt"]["pair_address"].lower(): p["fmt"] for p in live}
-    merged.update(existing)  # keep any prior pools not rediscovered this run
-
-    def _vol(pair: str) -> float:
-        for d in pools.values():
-            if d["fmt"]["pair_address"].lower() == pair:
-                return d["vol"]
-        return 0.0
-
-    final = sorted(merged.values(), key=_vol, reverse=True)[:TARGET_POOLS]
-
-    # Hard floor: only if the file is genuinely empty (no live, no prior).
+    # Hard floor: only if the live crawl found nothing (rate-limited / down),
+    # fall back to the curated V2 set so the engine always has a topology.
     if not final:
-        logger.warning("No pools available — using static fallback set")
+        logger.warning("No live V2 pools available — using static V2 fallback set")
         final = STATIC_FALLBACK[:TARGET_POOLS]
 
     WHITELIST_PATH.parent.mkdir(parents=True, exist_ok=True)
     WHITELIST_PATH.write_text(json.dumps(final, indent=2) + "\n")
 
     logger.info(
-        "Wrote %d pools to %s (live=%d, prior=%d, discovered=%d)",
+        "Wrote %d V2 pools to %s (live=%d, discovered=%d)",
         len(final),
         WHITELIST_PATH,
         len(live),
-        len(existing),
         len(pools),
     )
 

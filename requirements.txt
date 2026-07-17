@@ -1,14 +1,26 @@
-gradio>=4.0.0
-spaces>=0.30.0
-torch>=2.0.0
+# ===========================================================================
+# Core engine (required for VPS deployment — headless arbitrage engine)
+# ===========================================================================
 web3[async]>=7.0.0
 websockets>=13.0
 pydantic>=2.9.0
 pydantic-settings>=2.5.0
 aiosqlite>=0.20.0
-httpx>=0.27.0
+httpx[http2]>=0.27.0
 python-dotenv>=1.0.0
 eth-account>=0.13.0
+eth-abi>=5.0.0
+eth-utils>=4.0.0
 structlog>=24.4.0
 prometheus-client>=0.21.0
-httpx[http2]>=0.27.0
+
+# Solidity compiler for deploying the FlashloanExecutor (live mode only).
+# Required by scripts/deploy_executor.py. Not needed for PAPER/DRY_RUN.
+py-solc-x>=2.0.0
+
+# ===========================================================================
+# HuggingFace Spaces UI only (optional — not needed on a headless VPS)
+# ===========================================================================
+# gradio>=4.0.0
+# spaces>=0.30.0
+# torch>=2.0.0

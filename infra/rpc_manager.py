@@ -40,6 +40,25 @@ class RPCManager:
     async def close(self) -> None:
         await self._client.aclose()
 
+    def reset_connection(self) -> None:
+        """Force-close the underlying HTTP/2 connection pool so the next
+        ``call`` opens a fresh socket. Cheap no-op if already closed; used by
+        the LogsPoller to silently recover from idle-provider connection resets
+        without logging a warning."""
+        try:
+            self._client = httpx.AsyncClient(
+                http2=True,
+                timeout=5.0,
+                limits=httpx.Limits(
+                    max_keepalive_connections=100,
+                    max_connections=100,
+                ),
+            )
+            self._failover_active = False
+            self._consecutive_failures = 0
+        except Exception:  # noqa: BLE001
+            pass
+
     async def _http_post(
         self, url: str, method: str, params: list[Any]
     ) -> dict[str, Any]:

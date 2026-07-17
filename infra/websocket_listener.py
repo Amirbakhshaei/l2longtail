@@ -27,6 +27,33 @@ from infra.flea_market_discovery import SyncEvent, V2_SYNC_TOPIC, V3_SWAP_TOPIC
 
 logger = logging.getLogger(__name__)
 
+# Exceptions that indicate an idle HTTP/2 connection was reset / closed by the
+# RPC provider. These are routine during polling and must NOT be logged as
+# warnings — they are handled by reconnecting silently and continuing the loop.
+try:  # pragma: no cover - h2 is always present via httpx[http2]
+    from h2.exceptions import (
+        ConnectionError as H2ConnectionError,
+        ProtocolError as H2ProtocolError,
+    )
+except Exception:  # noqa: BLE001
+    H2ConnectionError = ()  # type: ignore[assignment]
+    H2ProtocolError = ()  # type: ignore[assignment]
+
+_DISCONNECT_EXCEPTIONS = (
+    H2ConnectionError,
+    H2ProtocolError,
+    # h2 raises ProtocolError via its state machine; the asyncio http2 transport
+    # surfaces idle resets as a generic ProtocolError or a ConnectionResetError.
+    ConnectionResetError,
+    BrokenPipeError,
+    # httpx wraps transport-level teardown in these.
+    httpx.RemoteProtocolError,
+    httpx.ProtocolError,
+    httpx.TransportError,
+    httpx.ConnectError,
+    httpx.DisconnectError,
+)
+
 SUBSCRIBE_METHOD = "eth_subscribe"
 UNSUBSCRIBE_METHOD = "eth_unsubscribe"
 BASE_BACKOFF = 1.0
@@ -331,7 +358,7 @@ class LogsPoller:
         whitelisted_addresses: list[str],
         sync_topic: str = V2_SYNC_TOPIC,
         v3_addresses: list[str] | None = None,
-        poll_interval: float = 4.0,
+        poll_interval: float = 1.5,
         poll_blocks: int = 5,
         max_backoff: float = 30.0,
     ) -> None:
@@ -417,7 +444,13 @@ class LogsPoller:
                         logger.error("V3 Swap callback failed: %s", e)
 
     async def listen(self) -> None:
-        """Poll forever with bounded backoff on RPC errors."""
+        """Poll forever with bounded backoff on RPC errors.
+
+        Standard RPC server disconnects (HTTP/2 connection resets on an idle
+        socket, dropped keep-alive, etc.) are expected when polling a third
+        party endpoint and are *not* logged as warnings — they are swallowed
+        silently, the connection is reset, and the loop continues.
+        """
         self._running = True
         attempt = 0
         logger.info(
@@ -434,6 +467,15 @@ class LogsPoller:
                 await asyncio.sleep(self.poll_interval)
             except asyncio.CancelledError:
                 break
+            except _DISCONNECT_EXCEPTIONS as e:
+                # Idle HTTP/2 connection reset / protocol state errors from the
+                # RPC provider. Reconnect silently and continue the loop — do
+                # not surface as [WARNING] or [ERROR].
+                if not self._running:
+                    break
+                attempt = 0
+                self.rpc.reset_connection()
+                await asyncio.sleep(self.poll_interval)
             except Exception as e:  # noqa: BLE001
                 if not self._running:
                     break

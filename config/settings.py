@@ -30,10 +30,8 @@ class Settings(BaseSettings):
 
     min_liquidity_usd: float = 100.0
     max_liquidity_usd: float = 100000.0
-    min_spread_pct: float = 1.0
     min_net_profit_usd: float = 0.50
     gas_baseline_usd: float = 0.02
-    max_trade_size_usd: float = 10.0
 
     whitelist_path: str = "config/whitelist.json"
     sync_lookback_blocks: int = 50

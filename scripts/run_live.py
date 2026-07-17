@@ -63,8 +63,7 @@ async def main() -> None:
     logger.info("  RPC Fallback: %s", settings.fallback_rpc_url)
     logger.info("  WSS:          %s", settings.wss_rpc_url)
     logger.info("  LLM Model:    %s", settings.llm_model_primary)
-    logger.info("  Trade Size:   $%.0f", settings.max_trade_size_usd)
-    logger.info("  Min Spread:   %.1f%%", settings.min_spread_pct)
+    logger.info("  Capital:      UNCAPPED (flashloan); size via on-chain grid search")
     logger.info("  Whitelist:    %s", settings.whitelist_path)
 
     rate_limiter = TokenBucketRateLimiter(
@@ -110,9 +109,7 @@ async def main() -> None:
     process_b = ProcessBSniper(
         cleared_db=cleared_db,
         rpc_manager=rpc_manager,
-        trade_size_usd=settings.max_trade_size_usd,
         gas_usd=settings.gas_baseline_usd,
-        min_spread_pct=settings.min_spread_pct,
         dry_run=settings.dry_run,
         llm_api_key=settings.llm_api_key,
         llm_model=settings.llm_model_primary,
