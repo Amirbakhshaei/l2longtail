@@ -715,6 +715,7 @@ class GraphArbEngine:
         # Flashloan capital is unbounded; the only execution gate is
         # net_profit_wei > gas_price_buffer_wei on the on-chain quote.
         gas_wei = self.gas_price_buffer_wei
+        cycle_start = time.perf_counter()
 
         from web3 import Web3
 
@@ -751,53 +752,71 @@ class GraphArbEngine:
         estimated_gas_cost_wei = gas_wei
         net_profit_wei = net_wei
 
-        # Build the structured hop path string: WETH -> (UniV3 500) -> ...
-        hop_labels = self._format_path(cycle.tokens, cycle.dexes, fee_tiers)
-        grid_str = " ".join(
-            f"{s}:{('REVERT' if v == 'REVERT' else f'{v:.4f}')}"
-            for s, v in grid_matrix.items()
+        # Spam guard: only emit the dense telemetry block if at least one grid
+        # size produced positive gross revenue (amount_out > amount_in), or if
+        # an execution is about to fire. Prevents I/O console spam on cycles
+        # that are unprofitable across the entire grid.
+        has_positive_gross = any(
+            (v != "REVERT" and (v - s) > 0) for s, v in grid_matrix.items()
         )
 
-        if net_profit_wei > estimated_gas_cost_wei:
-            action = "EXECUTE"
-        else:
-            action = "DROP"
-            logger.info(
-                "CYCLE EVAL | Path: %s\n"
-                "  Quoter RPC: %.2f ms | Hops: %d\n"
-                "  Grid Results: {%s}\n"
-                "  EV Analysis | Gross: %d wei | Gas Cost: %d wei | "
-                "Net EV: %d wei | Action: %s",
-                hop_labels,
-                latency_ms,
-                cycle.hop_count,
-                grid_str,
-                out,
-                estimated_gas_cost_wei,
-                net_profit_wei,
-                action,
-            )
+        if not has_positive_gross:
             return
+
+        # Build the structured telemetry strings.
+        hop_labels = self._format_path(cycle.tokens, cycle.dexes, fee_tiers)
+        discovery_ms = (time.perf_counter() - cycle_start) * 1000.0
+        total_ms = discovery_ms + latency_ms
+
+        # [GRID] gross profit per size in ETH: 0.1E: -0.001E | 0.5E: +0.005E ...
+        grid_parts = []
+        for s, v in grid_matrix.items():
+            if v == "REVERT":
+                grid_parts.append(f"{s}E: REVERT")
+            else:
+                gross_e = v - s
+                sign = "+" if gross_e >= 0 else "-"
+                grid_parts.append(f"{s}E: {sign}{abs(gross_e):.4f}E")
+        grid_str = " | ".join(grid_parts)
+
+        # [DECISION]
+        if out <= amount_in:
+            decision = "REJECT_NEGATIVE_GROSS"
+        elif all(v == "REVERT" for v in grid_matrix.values()):
+            decision = "REJECT_ALL_REVERT"
+        elif net_profit_wei <= estimated_gas_cost_wei:
+            decision = "REJECT_GAS_EATS_PROFIT"
+        else:
+            decision = "EXECUTE"
 
         net_usd = (net_wei / 1e18) * weth_price
         gross_spread_pct = ((out - amount_in) / amount_in) * 100
         trade_size_usd = (amount_in / 1e18) * weth_price
 
-        logger.info(
-            "CYCLE EVAL | Path: %s\n"
-            "  Quoter RPC: %.2f ms | Hops: %d\n"
-            "  Grid Results: {%s}\n"
-            "  EV Analysis | Gross: %d wei | Gas Cost: %d wei | "
-            "Net EV: %d wei | Action: %s",
+        self.logger.info(
+            "[ROUTE] %s\n"
+            "\t[LATENCY] Graph Discovery: %.2f ms | QuoterV2 RPC: %.2f ms | "
+            "Total: %.2f ms\n"
+            "\t[GRID] %s\n"
+            "\t[ECONOMICS] Optimal Input: %d | Gross Revenue: %d | "
+            "Est. Gas Cost: %d | Net EV: %d\n"
+            "\t[DECISION] %s",
             hop_labels,
+            discovery_ms,
             latency_ms,
-            cycle.hop_count,
+            total_ms,
             grid_str,
+            amount_in,
             out,
             estimated_gas_cost_wei,
             net_profit_wei,
-            action,
+            decision,
         )
+
+        if decision != "EXECUTE":
+            # Positive gross revenue but execution gate rejected (gas eats
+            # profit, or all sizes reverted). Telemetry already emitted above.
+            return
 
         if self.on_opportunity:
             await self.on_opportunity(

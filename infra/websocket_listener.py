@@ -34,28 +34,36 @@ logger = logging.getLogger(__name__)
 try:  # pragma: no cover - h2 is always present via httpx[http2]
     from h2.exceptions import (
         ConnectionError as H2ConnectionError,
-    )
-    from h2.exceptions import (
         ProtocolError as H2ProtocolError,
     )
-except Exception:  # noqa: BLE001
-    H2ConnectionError = ()  # type: ignore[assignment]
-    H2ProtocolError = ()  # type: ignore[assignment]
+except Exception:  # noqa: BLE001 - h2 optional; fall back to valid base classes
+    H2ConnectionError = ConnectionError
+    H2ProtocolError = ConnectionError
 
-_DISCONNECT_EXCEPTIONS = (
-    H2ConnectionError,
-    H2ProtocolError,
-    # h2 raises ProtocolError via its state machine; the asyncio http2 transport
-    # surfaces idle resets as a generic ProtocolError or a ConnectionResetError.
-    ConnectionResetError,
-    BrokenPipeError,
-    # httpx / httpcore wrap transport-level teardown in these.
-    httpx.RemoteProtocolError,
-    httpx.ProtocolError,
-    httpx.TransportError,
-    httpx.ConnectError,
-    httpx.HTTPError,
+# Guard: only keep entries that are actual exception classes. A fallback that
+# resolved to a non-class (e.g. an empty tuple) must never enter the tuple,
+# or `except <tuple>` raises "catching classes that do not inherit from
+# BaseException is not allowed".
+def _is_exc_class(obj: object) -> bool:
+    return isinstance(obj, type) and issubclass(obj, BaseException)
+
+
+_DISCONNECT_EXCEPTIONS = tuple(
+    e
+    for e in (
+        H2ConnectionError,
+        H2ProtocolError,
+        ConnectionResetError,
+        BrokenPipeError,
+        httpx.RemoteProtocolError,
+        httpx.ProtocolError,
+        httpx.TransportError,
+        httpx.ConnectError,
+        httpx.HTTPError,
+    )
+    if _is_exc_class(e)
 )
+
 
 SUBSCRIBE_METHOD = "eth_subscribe"
 UNSUBSCRIBE_METHOD = "eth_unsubscribe"
