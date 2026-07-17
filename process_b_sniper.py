@@ -56,6 +56,29 @@ logger = logging.getLogger(__name__)
 
 BALANCER_VAULT = "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
 
+# Human-readable DEX labels for structured path telemetry.
+DEX_LABELS = {
+    "uniswap_v2": "UniV2",
+    "uniswap_v3": "UniV3",
+    "sushiswap": "SushiV2",
+    "camelot_v2": "CamelotV2",
+    "camelot_v3": "CamelotV3",
+    "trader_joe": "TraderJoe",
+}
+
+
+def _token_label(addr: str) -> str:
+    """Short symbol-ish label for a token address in logs."""
+    a = addr.lower()
+    known = {
+        "0x82af49447d8a07e3bd95bd0d56f35241523fbab1": "WETH",
+        "0xaf88d065e77c8c2239327c5edb3a432268e5831": "USDC",
+        "0xfd086bc7cd5c481dcc9c85e478a1c0b69fcbb9": "USDT",
+    }
+    if a in known:
+        return known[a]
+    return addr[:8]
+
 
 # ===========================================================================
 # Legacy triangular pipeline (unchanged behaviour)
@@ -605,6 +628,23 @@ class GraphArbEngine:
         self._seen_cycles: set[tuple[str, ...]] = set()
         self._weth_price: float | None = None
 
+    def _format_path(
+        self, tokens: list[str], dexes: list[str], fee_tiers: list[int]
+    ) -> str:
+        """Render the cycle as a human-readable hop chain, e.g.:
+
+        ``WETH -> (UniV3 500) -> ARB -> (SushiV2) -> USDC -> (CamelotV3 3000) -> WETH``
+        """
+        parts: list[str] = [_token_label(tokens[0])]
+        for i, dex in enumerate(dexes):
+            label = DEX_LABELS.get(dex, dex)
+            if fee_tiers[i]:
+                parts.append(f"({label} {fee_tiers[i]})")
+            else:
+                parts.append(f"({label})")
+            parts.append(_token_label(tokens[i + 1]))
+        return " -> ".join(parts)
+
     def _build_graph(self) -> DirectedGraph:
         import json
         from pathlib import Path
@@ -698,7 +738,7 @@ class GraphArbEngine:
         # On-chain quote the whole route across the size grid and pick the
         # size that maximises net WETH profit. QuoterV2 prices the path via
         # the EVM, so no local tick math is required.
-        amount_in, out, net_wei = await self.quoter.quote_best_size(
+        amount_in, out, net_wei, grid_matrix, latency_ms = await self.quoter.quote_best_size(
             cycle.tokens, fee_tiers
         )
         if amount_in == 0:
@@ -711,13 +751,31 @@ class GraphArbEngine:
         estimated_gas_cost_wei = gas_wei
         net_profit_wei = net_wei
 
+        # Build the structured hop path string: WETH -> (UniV3 500) -> ...
+        hop_labels = self._format_path(cycle.tokens, cycle.dexes, fee_tiers)
+        grid_str = " ".join(
+            f"{s}:{('REVERT' if v == 'REVERT' else f'{v:.4f}')}"
+            for s, v in grid_matrix.items()
+        )
+
         if net_profit_wei > estimated_gas_cost_wei:
-            pass  # proceed to simulate + execute below
+            action = "EXECUTE"
         else:
-            logger.debug(
-                "CYCLE: net_profit_wei (%d) <= estimated_gas_cost_wei (%d) — drop",
-                net_profit_wei,
+            action = "DROP"
+            logger.info(
+                "CYCLE EVAL | Path: %s\n"
+                "  Quoter RPC: %.2f ms | Hops: %d\n"
+                "  Grid Results: {%s}\n"
+                "  EV Analysis | Gross: %d wei | Gas Cost: %d wei | "
+                "Net EV: %d wei | Action: %s",
+                hop_labels,
+                latency_ms,
+                cycle.hop_count,
+                grid_str,
+                out,
                 estimated_gas_cost_wei,
+                net_profit_wei,
+                action,
             )
             return
 
@@ -726,11 +784,19 @@ class GraphArbEngine:
         trade_size_usd = (amount_in / 1e18) * weth_price
 
         logger.info(
-            "GRAPH CYCLE: %d hops spread=%.2f%% net=$%.4f borrow=%d wei",
+            "CYCLE EVAL | Path: %s\n"
+            "  Quoter RPC: %.2f ms | Hops: %d\n"
+            "  Grid Results: {%s}\n"
+            "  EV Analysis | Gross: %d wei | Gas Cost: %d wei | "
+            "Net EV: %d wei | Action: %s",
+            hop_labels,
+            latency_ms,
             cycle.hop_count,
-            gross_spread_pct,
-            net_usd,
-            amount_in,
+            grid_str,
+            out,
+            estimated_gas_cost_wei,
+            net_profit_wei,
+            action,
         )
 
         if self.on_opportunity:

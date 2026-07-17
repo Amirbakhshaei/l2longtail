@@ -158,6 +158,13 @@ class RPCManager:
         val: str = result.get("result", "0x")
         return val
 
+    async def eth_call(self, to: str, data: str) -> str:
+        """Execute a stateless ``eth_call`` (no state change) and return the
+        raw hex result. Thin wrapper over ``call`` for callers that already
+        hold the target address + calldata."""
+        result = await self.call("eth_call", [{"to": to, "data": data}, "latest"])
+        return result.get("result", "0x")
+
     async def send_private_transaction(self, signed_raw_hex: str) -> str | None:
         try:
             result = await self._http_post(
