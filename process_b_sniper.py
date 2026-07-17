@@ -111,8 +111,8 @@ class TriangularScanner:
 
     async def scan(
         self,
-        min_spread_pct: float = 0.5,
-        trade_size_usd: float = 10.0,
+        min_spread_pct: float | None = None,
+        trade_size_usd: float | None = None,
     ) -> list[TriangularPath]:
         cleared_tokens = self.db.get_cleared_tokens()
         if not cleared_tokens:
@@ -151,7 +151,10 @@ class TriangularScanner:
                     weth_usdc_pool=weth_usdc_pool,
                     weth_price=weth_price,
                 )
-                if path and path.gross_spread_pct >= min_spread_pct:
+                # No heuristic spread gate — candidate paths are passed
+                # through for exact integer accounting (on-chain grid search
+                # sizes the optimal input and the gas-floor gate decides).
+                if path:
                     all_paths.append(path)
 
         return sorted(all_paths, key=lambda p: p.gross_spread_pct, reverse=True)
@@ -569,8 +572,7 @@ class GraphArbEngine:
         executor_address: str = "",
         weth_address: str = WETH_ADDRESS,
         dry_run: bool = True,
-        gas_usd: float = 0.02,
-        min_net_profit_usd: float = 0.50,
+        gas_price_buffer_wei: int = 0,
         live_executor=None,
         on_result: Callable[..., Awaitable[None]] | None = None,
         on_opportunity: Callable[..., Awaitable[None]] | None = None,
@@ -579,15 +581,15 @@ class GraphArbEngine:
         self.oracle = weth_oracle
         self.weth = weth_address
         self.dry_run = dry_run
-        self.gas_usd = gas_usd
-        self.min_net_profit_usd = min_net_profit_usd
+        # Absolute integer gas buffer (wei) for EVM-output accounting. The
+        # execution gate is net_profit_wei > gas_price_buffer_wei.
+        self.gas_price_buffer_wei = gas_price_buffer_wei
         self.live_executor = live_executor
         self.on_result = on_result
         self.on_opportunity = on_opportunity
         # Flashloan capital is unbounded (Balancer V2 0% loan) — no hardcoded
-        # cap. The Ternary Search upper bound is derived dynamically from the
-        # borrow-hop WETH reserve (see _evaluate_cycle), so sizing is free to
-        # find the true optimum on deep liquidity imbalances.
+        # cap. The on-chain grid search sizes the true optimum on deep
+        # liquidity imbalances (see _evaluate_cycle).
 
         self.flashloan = FlashloanExecutor(
             rpc_manager,
@@ -595,7 +597,7 @@ class GraphArbEngine:
             executor_address,
             weth_address,
             dry_run,
-            min_net_profit_usd,
+            min_net_profit_usd=0.0,
         )
         # On-chain quoting via QuoterV2 + Multicall3 replaces local tick math.
         self.quoter = OnChainQuoter(rpc_manager)
@@ -671,8 +673,8 @@ class GraphArbEngine:
 
     async def _evaluate_cycle(self, cycle: ArbCycle, weth_price: float) -> None:
         # Flashloan capital is unbounded; the only execution gate is
-        # net_profit_wei > estimated_gas_cost_wei on the on-chain quote.
-        gas_wei = int((self.gas_usd / weth_price) * 1e18)
+        # net_profit_wei > gas_price_buffer_wei on the on-chain quote.
+        gas_wei = self.gas_price_buffer_wei
 
         from web3 import Web3
 
@@ -703,8 +705,20 @@ class GraphArbEngine:
             logger.debug("CYCLE: no on-chain quote produced a positive size — skip")
             return
 
-        # The single execution gate: net profit (wei) must exceed gas cost.
-        if net_wei <= gas_wei:
+        # Exact integer accounting: net profit (wei) must clear the estimated
+        # gas cost (wei) before we broadcast. The FlashloanExecutor covers
+        # capital, so only gas is the execution-floor constraint.
+        estimated_gas_cost_wei = gas_wei
+        net_profit_wei = net_wei
+
+        if net_profit_wei > estimated_gas_cost_wei:
+            pass  # proceed to simulate + execute below
+        else:
+            logger.debug(
+                "CYCLE: net_profit_wei (%d) <= estimated_gas_cost_wei (%d) — drop",
+                net_profit_wei,
+                estimated_gas_cost_wei,
+            )
             return
 
         net_usd = (net_wei / 1e18) * weth_price
@@ -754,7 +768,7 @@ class GraphArbEngine:
             output_weth_wei=out,
             gross_spread_pct=gross_spread_pct,
             trade_size_usd=trade_size_usd,
-            gas_overhead_usd=self.gas_usd,
+            gas_overhead_usd=self.gas_price_buffer_wei / 1e18,
             net_profit_usd=net_usd,
             status="EXECUTED" if (self.dry_run or ok) else "ABORTED",
             abort_reason="" if (self.dry_run or ok) else f"exec failed: {tx_hash}",
@@ -780,10 +794,7 @@ class ProcessBSniper:
         self,
         cleared_db: ClearedTokensDB,
         rpc_manager: RPCManager,
-        trade_size_usd: float = 10.0,
-        gas_usd: float = 0.02,
-        min_spread_pct: float = 0.5,
-        min_net_profit_usd: float = 0.50,
+        gas_price_buffer_wei: int = 0,
         dry_run: bool = True,
         live_executor=None,
         llm_api_key: str = "",
@@ -799,10 +810,7 @@ class ProcessBSniper:
         self.oracle = WETHPriceOracle(rpc_manager)
         self.scanner = TriangularScanner(rpc_manager, cleared_db, self.oracle)
         self.simulator = Simulator(rpc_manager)
-        self.trade_size_usd = trade_size_usd
-        self.gas_usd = gas_usd
-        self.min_spread_pct = min_spread_pct
-        self.min_net_profit_usd = min_net_profit_usd
+        self.gas_price_buffer_wei = gas_price_buffer_wei
         self.dry_run = dry_run
         self.live_executor = live_executor
         self.on_opportunity = on_opportunity
@@ -815,6 +823,16 @@ class ProcessBSniper:
         self._results: list[ExecutionState] = []
         self._weth_price: float | None = None
 
+        # Grid of input sizes (wei) fed to the on-chain Multicall3 grid search.
+        # 0.1 WETH, 0.5 WETH, 1.0 WETH, 5.0 WETH, 10.0 WETH
+        self.grid_sizes_wei = [
+            10**17,
+            5 * 10**17,
+            10**18,
+            5 * 10**18,
+            10**19,
+        ]
+
         self.sync_queue = sync_queue
         self.graph_mode = graph_mode
         self.graph_engine: GraphArbEngine | None = None
@@ -826,8 +844,7 @@ class ProcessBSniper:
                 executor_address=executor_address,
                 weth_address=weth_address,
                 dry_run=dry_run,
-                gas_usd=gas_usd,
-                min_net_profit_usd=min_net_profit_usd,
+                gas_price_buffer_wei=gas_price_buffer_wei,
                 live_executor=live_executor,
                 on_result=self._append_result,
                 on_opportunity=on_opportunity,
@@ -859,10 +876,7 @@ class ProcessBSniper:
 
     # -- triangular path ---------------------------------------------------
     async def _scan_cycle(self) -> None:
-        paths = await self.scanner.scan(
-            min_spread_pct=self.min_spread_pct,
-            trade_size_usd=self.trade_size_usd,
-        )
+        paths = await self.scanner.scan()
 
         self._weth_price = await self.scanner._get_weth_price()
         if self._weth_price is None:
@@ -876,6 +890,11 @@ class ProcessBSniper:
     async def _evaluate_path(self, path: TriangularPath) -> ExecutionState | None:
         trade_id = f"{path.token_address[:10]}_{int(time.time() * 1000)}"
 
+        # Legacy triangular path: trade size defaults to the grid midpoint;
+        # gas is the absolute integer buffer (wei) for exact accounting.
+        trade_size_usd = (self.grid_sizes_wei[2] / 1e18) * (self._weth_price or 0.0)
+        gas_wei = self.gas_price_buffer_wei
+
         state = ExecutionState(
             trade_id=trade_id,
             token_address=path.token_address,
@@ -887,26 +906,23 @@ class ProcessBSniper:
             input_weth_wei=path.input_weth_wei,
             output_weth_wei=path.output_weth_wei,
             gross_spread_pct=path.gross_spread_pct,
-            trade_size_usd=self.trade_size_usd,
-            gas_overhead_usd=self.gas_usd,
+            trade_size_usd=trade_size_usd,
+            gas_overhead_usd=gas_wei / 1e18,
             net_profit_usd=0.0,
             quote_symbol=path.quote_symbol,
             exotic_amount_wei=path.exotic_amount_wei,
             quote_amount_raw=path.quote_amount_raw,
         )
 
-        gas_baseline_eth = self.gas_usd / self._weth_price
-        gas_baseline_wei = int(gas_baseline_eth * 1e18)
-
-        if path.output_weth_wei <= path.input_weth_wei + gas_baseline_wei:
+        if path.output_weth_wei <= path.input_weth_wei + gas_wei:
             net_profit, _ = compute_net_profit(
-                path.gross_spread_pct, self.trade_size_usd, self.gas_usd
+                path.gross_spread_pct, trade_size_usd, gas_wei / 1e18
             )
             state.net_profit_usd = net_profit
             state.status = "ABORTED"
             state.abort_reason = (
                 f"math gate: output {path.output_weth_wei} <= "
-                f"input+gas {path.input_weth_wei + gas_baseline_wei}"
+                f"input+gas {path.input_weth_wei + gas_wei}"
             )
             return state
 
@@ -919,20 +935,20 @@ class ProcessBSniper:
 
         if self.on_opportunity:
             net_profit_math, _ = compute_net_profit(
-                path.gross_spread_pct, self.trade_size_usd, self.gas_usd
+                path.gross_spread_pct, trade_size_usd, gas_wei / 1e18
             )
             await self.on_opportunity(
                 token_address=path.token_address,
                 dex=path.dex_name,
                 spread_pct=path.gross_spread_pct,
                 net_profit=net_profit_math,
-                trade_size=self.trade_size_usd,
+                trade_size=trade_size_usd,
                 stage="MATH",
             )
 
         sim_success, sim_reason, sim_output = (
             await self.simulator.simulate_triangular(
-                path, self.trade_size_usd, self._weth_price
+                path, trade_size_usd, self._weth_price
             )
         )
 
@@ -948,7 +964,7 @@ class ProcessBSniper:
         state.output_weth_eth = sim_output / 1e18
 
         net_profit, is_profitable = compute_net_profit(
-            path.gross_spread_pct, self.trade_size_usd, self.gas_usd
+            path.gross_spread_pct, trade_size_usd, gas_wei / 1e18
         )
         state.net_profit_usd = net_profit
 

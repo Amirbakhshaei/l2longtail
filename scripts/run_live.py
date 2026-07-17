@@ -109,7 +109,6 @@ async def main() -> None:
     process_b = ProcessBSniper(
         cleared_db=cleared_db,
         rpc_manager=rpc_manager,
-        gas_usd=settings.gas_baseline_usd,
         dry_run=settings.dry_run,
         llm_api_key=settings.llm_api_key,
         llm_model=settings.llm_model_primary,
