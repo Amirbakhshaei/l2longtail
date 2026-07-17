@@ -19,11 +19,12 @@ from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
 
+import httpx
 import websockets
 from websockets.asyncio.client import ClientConnection
 from websockets.exceptions import ConnectionClosed
 
-from infra.flea_market_discovery import SyncEvent, V2_SYNC_TOPIC, V3_SWAP_TOPIC
+from infra.flea_market_discovery import V2_SYNC_TOPIC, V3_SWAP_TOPIC, SyncEvent
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +34,8 @@ logger = logging.getLogger(__name__)
 try:  # pragma: no cover - h2 is always present via httpx[http2]
     from h2.exceptions import (
         ConnectionError as H2ConnectionError,
+    )
+    from h2.exceptions import (
         ProtocolError as H2ProtocolError,
     )
 except Exception:  # noqa: BLE001
@@ -46,12 +49,12 @@ _DISCONNECT_EXCEPTIONS = (
     # surfaces idle resets as a generic ProtocolError or a ConnectionResetError.
     ConnectionResetError,
     BrokenPipeError,
-    # httpx wraps transport-level teardown in these.
+    # httpx / httpcore wrap transport-level teardown in these.
     httpx.RemoteProtocolError,
     httpx.ProtocolError,
     httpx.TransportError,
     httpx.ConnectError,
-    httpx.DisconnectError,
+    httpx.HTTPError,
 )
 
 SUBSCRIBE_METHOD = "eth_subscribe"
@@ -123,7 +126,7 @@ class WebSocketListener:
             try:
                 await self._connect_and_stream()
                 attempt = 0
-            except (ConnectionClosed, OSError, asyncio.TimeoutError) as e:
+            except (TimeoutError, ConnectionClosed, OSError) as e:
                 if not self._running:
                     break
                 attempt += 1
@@ -467,7 +470,7 @@ class LogsPoller:
                 await asyncio.sleep(self.poll_interval)
             except asyncio.CancelledError:
                 break
-            except _DISCONNECT_EXCEPTIONS as e:
+            except _DISCONNECT_EXCEPTIONS:
                 # Idle HTTP/2 connection reset / protocol state errors from the
                 # RPC provider. Reconnect silently and continue the loop — do
                 # not surface as [WARNING] or [ERROR].
