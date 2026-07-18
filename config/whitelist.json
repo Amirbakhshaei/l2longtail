@@ -14,41 +14,6 @@
     "fee_tier": 3000
   },
   {
-    "pair_address": "0x0e4831319a50228b9e450861297ab92dee15b44f",
-    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
-    "token1": "0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f",
-    "dex": "uniswap_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0x5969efdde3cf5c0d9a88ae51e47d721096a97203",
-    "token0": "0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f",
-    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
-    "dex": "uniswap_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0x641c00a822e8b671738d32a431a4fb6074e5c79d",
-    "token0": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
-    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
-    "dex": "uniswap_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0xc473e2aee3441bf9240be85eb122abb059a3b57c",
-    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
-    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
-    "dex": "uniswap_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0xbe3ad6a5669dc0b8b12febc03608860c31e2eef6",
-    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
-    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
-    "dex": "uniswap_v3",
-    "fee_tier": 3000
-  },
-  {
     "pair_address": "0xc6f780497a95e246eb9449f5e4770916dcd6396a",
     "token0": "0x912ce59144191c1204e64559fe8253a0e49e6548",
     "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
@@ -63,24 +28,30 @@
     "fee_tier": 3000
   },
   {
-    "pair_address": "0xc86eb7b85807020b4548ee05b54bfc956eebbfcd",
-    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
-    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
-    "dex": "camelot_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0xb1026b8e7276e7ac75410f1fcbbe21796e8f7526",
-    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
-    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
-    "dex": "camelot_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0xa17afcab059f3c6751f5b64347b5a503c3291868",
-    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "pair_address": "0x5969efdde3cf5c0d9a88ae51e47d721096a97203",
+    "token0": "0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f",
     "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
-    "dex": "camelot_v3",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x0e4831319a50228b9e450861297ab92dee15b44f",
+    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "token1": "0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x4bfc22a4da7f31f8a912a79a7e44a822398b4390",
+    "token0": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "token1": "0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f",
+    "dex": "pancakeswap"
+  },
+  {
+    "pair_address": "0x641c00a822e8b671738d32a431a4fb6074e5c79d",
+    "token0": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "dex": "uniswap_v3",
     "fee_tier": 3000
   },
   {
@@ -91,22 +62,82 @@
     "fee_tier": 3000
   },
   {
-    "pair_address": "0xc31e54c7a869b9fcbecc14363cf510d1c41fa443",
-    "token0": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
-    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
+    "pair_address": "0xbe3ad6a5669dc0b8b12febc03608860c31e2eef6",
+    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
     "dex": "uniswap_v3",
     "fee_tier": 3000
   },
   {
-    "pair_address": "0x50e7b9293aef80c304234e86c84a01be8401c530",
-    "token0": "0x0c880f6761f1af8d9aa9c466984b80dab9a8c9e8",
-    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "pair_address": "0x9b42809aaae8d088ee01fe637e948784730f0386",
+    "token0": "0xcbb7c0000ab88b473b1f5afd9ef808440eed33bf",
+    "token1": "0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0xc86eb7b85807020b4548ee05b54bfc956eebbfcd",
+    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
+    "dex": "camelot_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0xd9e2a1a61b6e61b275cec326465d417e52c1b95c",
+    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "pancakeswap"
+  },
+  {
+    "pair_address": "0xb1026b8e7276e7ac75410f1fcbbe21796e8f7526",
+    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "camelot_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x843ac8dc6d34aeb07a56812b8b36429ee46bdd07",
+    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "token1": "0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f",
+    "dex": "pancakeswap"
+  },
+  {
+    "pair_address": "0x7fcdc35463e3770c2fb992716cd070b63540b947",
+    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "pancakeswap"
+  },
+  {
+    "pair_address": "0x35218a1cbac5bbc3e57fd9bd38219d37571b3537",
+    "token0": "0x5979d7b546e38e414f7e9822514be443a4800529",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x15eb51a325cbce6c1cc8202a6f8a76224c5b7540",
+    "token0": "0x3b8db18e69d6686ad9371a423afe3dd1065c94f1",
+    "token1": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x889af944e95788f770983062b13b5a52e367029b",
+    "token0": "0x6c84a8f1c29108f47a79964b5fe888d4f4d0de40",
+    "token1": "0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f",
     "dex": "uniswap_v3",
     "fee_tier": 3000
   },
   {
     "pair_address": "0xdbaeb7f0dfe3a0aafd798ccecb5b22e708f7852c",
     "token0": "0x0c880f6761f1af8d9aa9c466984b80dab9a8c9e8",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0xc473e2aee3441bf9240be85eb122abb059a3b57c",
+    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
     "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
     "dex": "uniswap_v3",
     "fee_tier": 3000
@@ -119,6 +150,47 @@
     "fee_tier": 3000
   },
   {
+    "pair_address": "0x50e7b9293aef80c304234e86c84a01be8401c530",
+    "token0": "0x0c880f6761f1af8d9aa9c466984b80dab9a8c9e8",
+    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0xe51635ae8136abac44906a8f230c2d235e9c195f",
+    "token0": "0x912ce59144191c1204e64559fe8253a0e49e6548",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "camelot_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x1aeedd3727a6431b8f070c0afaa81cc74f273882",
+    "token0": "0xfc5a1a6eb076a2c7ad06ed22c90d7e710e35ad0a",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x49340dbb8fb5ece2f9b594e77ab774e65725e9d8",
+    "token0": "0x0c1c1c109fe34733fca54b82d7b46b75cfb71f6e",
+    "token1": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0xc31e54c7a869b9fcbecc14363cf510d1c41fa443",
+    "token0": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x39dfec73d065dc96689debb188eaad01d69a99b3",
+    "token0": "0x7af57478a188620c21299e6c2832ab6e70fc8607",
+    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "dex": "sushiswap"
+  },
+  {
     "pair_address": "0x91308bc9ce8ca2db82aa30c65619856cc939d907",
     "token0": "0xf97f4df75117a78c1a5a0dbb814af92458539fb4",
     "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
@@ -126,25 +198,68 @@
     "fee_tier": 3000
   },
   {
+    "pair_address": "0xa17afcab059f3c6751f5b64347b5a503c3291868",
+    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "dex": "camelot_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0xaebdca1bc8d89177ebe2308d62af5e74885dccc3",
+    "token0": "0x912ce59144191c1204e64559fe8253a0e49e6548",
+    "token1": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
     "pair_address": "0x7f580f8a02b759c350e6b8340e7c2d4b8162b6a9",
     "token0": "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1",
     "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
-    "dex": "uniswap_v3",
-    "fee_tier": 3000
+    "dex": "uniswap_v2"
   },
   {
-    "pair_address": "0x35218a1cbac5bbc3e57fd9bd38219d37571b3537",
-    "token0": "0x5979d7b546e38e414f7e9822514be443a4800529",
+    "pair_address": "0xd3211dcd145990f740f8607fb0364080d718e3e3",
+    "token0": "0xb23bb8c2c6cb9169eeac8f2bd42fcf333a1a8c55",
+    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "dex": "uniswap_v2"
+  },
+  {
+    "pair_address": "0xbfca4230115de8341f3a3d5e8845ffb3337b2be3",
+    "token0": "0x0c880f6761f1af8d9aa9c466984b80dab9a8c9e8",
     "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "camelot_v2"
+  },
+  {
+    "pair_address": "0xf3eb87c1f6020982173c908e7eb31aa66c1f0296",
+    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "sushiswap"
+  },
+  {
+    "pair_address": "0xd845f7d4f4deb9ff5bcf09d140ef13718f6f6c71",
+    "token0": "0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "camelot_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x7e928afb59f5de9d2f4d162f754c6eb40c88aa8e",
+    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "dex": "pancakeswap"
+  },
+  {
+    "pair_address": "0xcda53b1f66614552f834ceef361a8d12a0b8dad8",
+    "token0": "0x912ce59144191c1204e64559fe8253a0e49e6548",
+    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
     "dex": "uniswap_v3",
     "fee_tier": 3000
   },
   {
-    "pair_address": "0xc82819f72a9e77e2c0c3a69b3196478f44303cf4",
+    "pair_address": "0x389938cf14be379217570d8e4619e51fbdafaa21",
     "token0": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
     "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
-    "dex": "uniswap_v3",
-    "fee_tier": 3000
+    "dex": "pancakeswap"
   },
   {
     "pair_address": "0x468b88941e7cc0b88c1869d68ab6b570bcef62ff",
@@ -154,9 +269,43 @@
     "fee_tier": 3000
   },
   {
+    "pair_address": "0x53d3e59faac08184720bcb2816f4cf5b36d6767d",
+    "token0": "0x88a269df8fe7f53e590c561954c52fccc8ec0cfb",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0xa95b0f5a65a769d82ab4f3e82842e45b8bbaf101",
+    "token0": "0x11cdb42b0eb46d95f990bedd4695a6e3fa034978",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0xcfe0acf3b242aef2697ba94f11a31f61f2349bcb",
+    "token0": "0x11e969e9b3f89cb16d686a03cd8508c9fc0361af",
+    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "dex": "pancakeswap"
+  },
+  {
+    "pair_address": "0xe461f84c3fe6bcdd1162eb0ef4284f3bb6e4cad3",
+    "token0": "0x0c880f6761f1af8d9aa9c466984b80dab9a8c9e8",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "camelot_v3",
+    "fee_tier": 3000
+  },
+  {
     "pair_address": "0xc24f7d8e51a64dc1238880bd00bb961d54cbeb29",
     "token0": "0xfa7f8980b0f1e64a2062791cc3b0871572f1f7f0",
     "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x12a46b5de0c34ade7eee54a2c3310001b303a20e",
+    "token0": "0x25118290e6a5f4139381d072181157035864099d",
+    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
     "dex": "uniswap_v3",
     "fee_tier": 3000
   },
@@ -168,162 +317,21 @@
     "fee_tier": 3000
   },
   {
-    "pair_address": "0x8e295789c9465487074a65b1ae9ce0351172393f",
-    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
-    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
-    "dex": "uniswap_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0x45fae8d0d2ace73544baab452f9020925afccc75",
-    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
-    "token1": "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1",
-    "dex": "camelot_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0xe51635ae8136abac44906a8f230c2d235e9c195f",
-    "token0": "0x912ce59144191c1204e64559fe8253a0e49e6548",
-    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
-    "dex": "camelot_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0x3db70832f48f8c01ee041671f7bb1cfaa2677584",
-    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
-    "token1": "0xba5ddd1f9d7f570dc94a51479a000e3bce967196",
-    "dex": "uniswap_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0xdeb89de4bb6ecf5bfed581eb049308b52d9b2da7",
-    "token0": "0x5979d7b546e38e414f7e9822514be443a4800529",
-    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
-    "dex": "camelot_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0x12a46b5de0c34ade7eee54a2c3310001b303a20e",
-    "token0": "0x25118290e6a5f4139381d072181157035864099d",
-    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
-    "dex": "uniswap_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0xe8795cf9c2309ecfe05df028eb0f21d5d6e3a951",
-    "token0": "0xf97f4df75117a78c1a5a0dbb814af92458539fb4",
-    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
-    "dex": "camelot_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0x17c14d2c404d167802b16c450d3c99f88f2c4f4d",
+    "pair_address": "0x0bacc7a9717e70ea0da5ac075889bd87d4c81197",
     "token0": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
-    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
-    "dex": "uniswap_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0xe461f84c3fe6bcdd1162eb0ef4284f3bb6e4cad3",
-    "token0": "0x0c880f6761f1af8d9aa9c466984b80dab9a8c9e8",
-    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
-    "dex": "camelot_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0x7cf803e8d82a50504180f417b8bc7a493c0a0503",
-    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
-    "token1": "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1",
-    "dex": "uniswap_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0xdd672b3b768a16b9bcb4ee1060d3e8221435beaa",
-    "token0": "0xba5ddd1f9d7f570dc94a51479a000e3bce967196",
-    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
-    "dex": "uniswap_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0xcda53b1f66614552f834ceef361a8d12a0b8dad8",
-    "token0": "0x912ce59144191c1204e64559fe8253a0e49e6548",
-    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
-    "dex": "uniswap_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0x05477c22a5349cee601500da0489dad137fd6bfa",
-    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
-    "token1": "0xfa7f8980b0f1e64a2062791cc3b0871572f1f7f0",
-    "dex": "uniswap_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0xa961f0473da4864c5ed28e00fcc53a3aab056c1b",
-    "token0": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
-    "token1": "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1",
-    "dex": "uniswap_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0xac70bd92f89e6739b3a08db9b6081a923912f73d",
-    "token0": "0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f",
-    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
-    "dex": "uniswap_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0xaebdca1bc8d89177ebe2308d62af5e74885dccc3",
-    "token0": "0x912ce59144191c1204e64559fe8253a0e49e6548",
-    "token1": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
-    "dex": "uniswap_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0x32a5746ba6826828716cc1a394bc33301ebc7656",
-    "token0": "0xf97f4df75117a78c1a5a0dbb814af92458539fb4",
     "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
-    "dex": "uniswap_v3",
-    "fee_tier": 3000
+    "dex": "pancakeswap"
   },
   {
-    "pair_address": "0xf0428617433652c9dc6d1093a42adfbf30d29f74",
-    "token0": "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1",
-    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
-    "dex": "uniswap_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0x8c9d230d45d6cfee39a6680fb7cb7e8de7ea8e71",
-    "token0": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
-    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
-    "dex": "uniswap_v3",
+    "pair_address": "0xaf4cd193243908589e4e586629d24c7df1964146",
+    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "ramses",
     "fee_tier": 3000
   },
   {
     "pair_address": "0x92c63d0e701caae670c9415d91c474f686298f00",
     "token0": "0x912ce59144191c1204e64559fe8253a0e49e6548",
-    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
-    "dex": "uniswap_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0x13398e27a21be1218b6900cbedf677571df42a48",
-    "token0": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
-    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
-    "dex": "uniswap_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0xfae2ae0a9f87fd35b5b0e24b47bac796a7eefea1",
-    "token0": "0x912ce59144191c1204e64559fe8253a0e49e6548",
-    "token1": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
-    "dex": "camelot_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0x1aeedd3727a6431b8f070c0afaa81cc74f273882",
-    "token0": "0xfc5a1a6eb076a2c7ad06ed22c90d7e710e35ad0a",
     "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
     "dex": "uniswap_v3",
     "fee_tier": 3000
@@ -336,71 +344,78 @@
     "fee_tier": 3000
   },
   {
-    "pair_address": "0x8cc8093218bcac8b1896a1eed4d925f6f6ab289f",
-    "token0": "0x3d9907f9a368ad0a51be60f7da3b97cf940982d8",
-    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
-    "dex": "camelot_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0xbbe36e6f0331c6a36ab44bc8421e28e1a1871c1e",
-    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
-    "token1": "0xf97f4df75117a78c1a5a0dbb814af92458539fb4",
-    "dex": "uniswap_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0x905dfcd5649217c42684f23958568e533c711aa3",
-    "token0": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
-    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
-    "dex": "sushiswap"
-  },
-  {
-    "pair_address": "0x8d68772af387a003cc74f993822b3b7f082c23bc",
+    "pair_address": "0xe8795cf9c2309ecfe05df028eb0f21d5d6e3a951",
     "token0": "0xf97f4df75117a78c1a5a0dbb814af92458539fb4",
-    "token1": "0xfa7f8980b0f1e64a2062791cc3b0871572f1f7f0",
-    "dex": "uniswap_v3",
-    "fee_tier": 3000
-  },
-  {
-    "pair_address": "0xc35aa1cec34e02a8acc3e5f79c22be364823094c",
-    "token0": "0xd77b108d4f6cefaa0cae9506a934e825becca46e",
-    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
     "dex": "camelot_v3",
     "fee_tier": 3000
   },
   {
-    "pair_address": "0x16062f8871da1b53dc990ebc6765868ddce1e5be",
-    "token0": "0xba5ddd1f9d7f570dc94a51479a000e3bce967196",
-    "token1": "0xfa7f8980b0f1e64a2062791cc3b0871572f1f7f0",
+    "pair_address": "0x7cf803e8d82a50504180f417b8bc7a493c0a0503",
+    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "token1": "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1",
+    "dex": "uniswap_v2"
+  },
+  {
+    "pair_address": "0xbf24f38243392a0b4b7a13d10dbf294f40ae401b",
+    "token0": "0xa78d8321b20c4ef90ecd72f2588aa985a4bdb684",
+    "token1": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
     "dex": "uniswap_v3",
     "fee_tier": 3000
   },
   {
-    "pair_address": "0x92fd143a8fa0c84e016c2765648b9733b0aa519e",
-    "token0": "0x912ce59144191c1204e64559fe8253a0e49e6548",
+    "pair_address": "0x3db70832f48f8c01ee041671f7bb1cfaa2677584",
+    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "token1": "0xba5ddd1f9d7f570dc94a51479a000e3bce967196",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0xa0b05a6eebf17392642d416ba4d4fb9becb430ca",
+    "token0": "0xd7a892f28dedc74e6b7b33f93be08abfc394a360",
     "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
     "dex": "uniswap_v3",
     "fee_tier": 3000
   },
   {
-    "pair_address": "0x97bca422ec0ee4851f2110ea743c1cd0a14835a1",
-    "token0": "0x912ce59144191c1204e64559fe8253a0e49e6548",
+    "pair_address": "0xeeaa3e45c763c0c837c49fa014ca1cc179753077",
+    "token0": "0x1009c5c11cdd44bffeac3c70db7eb143df2faad1",
     "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
     "dex": "uniswap_v3",
     "fee_tier": 3000
   },
   {
-    "pair_address": "0xd37af656abf91c7f548fffc0133175b5e4d3d5e6",
-    "token0": "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1",
-    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
+    "pair_address": "0x4fd47e5102dfbf95541f64ed6fe13d4ed26d2546",
+    "token0": "0x289ba1701c2f088cf0faf8b3705246331cb8a839",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
     "dex": "uniswap_v3",
     "fee_tier": 3000
   },
   {
-    "pair_address": "0xa79fd76ca2b24631ec3151f10c0660a30bc946e7",
-    "token0": "0xf97f4df75117a78c1a5a0dbb814af92458539fb4",
-    "token1": "0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f",
+    "pair_address": "0x1186b18a85250ef23bafb3a2382b169b4f8e5d60",
+    "token0": "0x70f2eadf1ca1969ff42b0c78e9da519e8937cbaf",
+    "token1": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x7e9cb8ad4a7683070e233f3eb1d07d87272b9b26",
+    "token0": "0x7189fb5b6504bbff6a852b13b7b82a3c118fdc27",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0xfae2ae0a9f87fd35b5b0e24b47bac796a7eefea1",
+    "token0": "0x912ce59144191c1204e64559fe8253a0e49e6548",
+    "token1": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "dex": "camelot_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x6f38e884725a116c9c7fbf208e79fe8828a2595f",
+    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
     "dex": "uniswap_v3",
     "fee_tier": 3000
   },
@@ -412,26 +427,459 @@
     "fee_tier": 3000
   },
   {
-    "pair_address": "0xf64dfe17c8b87f012fcf50fbda1d62bfa148366a",
+    "pair_address": "0x45fae8d0d2ace73544baab452f9020925afccc75",
+    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "token1": "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1",
+    "dex": "camelot_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x5cbddc44f31067df328aa7a8da03aca6f2edd2ad",
+    "token0": "0xc87b37a581ec3257b734886d9d3a581f5a9d056c",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0xe5cf22ee4988d54141b77050967e1052bd9c7f7a",
+    "token0": "0x092baadb7def4c3981454dd9c0a0d7ff07bcfc86",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x05477c22a5349cee601500da0489dad137fd6bfa",
+    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "token1": "0xfa7f8980b0f1e64a2062791cc3b0871572f1f7f0",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x977f5d9a39049c73bc26edb3fa15d5f7c0ac82e9",
+    "token0": "0xf97f4df75117a78c1a5a0dbb814af92458539fb4",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "pancakeswap"
+  },
+  {
+    "pair_address": "0xdd672b3b768a16b9bcb4ee1060d3e8221435beaa",
+    "token0": "0xba5ddd1f9d7f570dc94a51479a000e3bce967196",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x52f9d14bed8ce6536da063aaf274ae2747ef4853",
+    "token0": "0x13ad51ed4f1b7e9dc168d8a00cb3f4ddd85efa60",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0xb7e50106a5bd3cf21af210a755f9c8740890a8c9",
+    "token0": "0x539bde0d7dbd336b79148aa742883198bbf60342",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "sushiswap"
+  },
+  {
+    "pair_address": "0x0f143fc50d6c71fee95d6ec1030e62d788507b84",
+    "token0": "0x7189fb5b6504bbff6a852b13b7b82a3c118fdc27",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "camelot_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x97bca422ec0ee4851f2110ea743c1cd0a14835a1",
+    "token0": "0x912ce59144191c1204e64559fe8253a0e49e6548",
+    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0xac70bd92f89e6739b3a08db9b6081a923912f73d",
+    "token0": "0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f",
+    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x4cef551255ec96d89fec975446301b5c4e164c59",
+    "token0": "0x6985884c4392d348587b19cb9eaaf157f13271cd",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0xc6d8aa297c937ab78308baea341c0a24577c2616",
+    "token0": "0x11e969e9b3f89cb16d686a03cd8508c9fc0361af",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x9ffca51d23ac7f7df82da414865ef1055e5afcc3",
+    "token0": "0x912ce59144191c1204e64559fe8253a0e49e6548",
+    "token1": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "dex": "pancakeswap"
+  },
+  {
+    "pair_address": "0x80ceb98632409080924dce50c26acc25458dde17",
+    "token0": "0xba5ddd1f9d7f570dc94a51479a000e3bce967196",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "pancakeswap"
+  },
+  {
+    "pair_address": "0xcb198a55e2a88841e855be4eacaad99422416b33",
+    "token0": "0x6c84a8f1c29108f47a79964b5fe888d4f4d0de40",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x149e36e72726e0bcea5c59d40df2c43f60f5a22d",
+    "token0": "0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "uniswap_v2"
+  },
+  {
+    "pair_address": "0x9b6ff025aee245d314c09f57b72f0de6e231c3a6",
+    "token0": "0x18c11fd286c5ec11c3b683caa813b77f5163a122",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "camelot_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x1106db7165a8d4a8559b441ecdee14a5d5070dbc",
+    "token0": "0x539bde0d7dbd336b79148aa742883198bbf60342",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "camelot_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x8e295789c9465487074a65b1ae9ce0351172393f",
+    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x92fd143a8fa0c84e016c2765648b9733b0aa519e",
+    "token0": "0x912ce59144191c1204e64559fe8253a0e49e6548",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x0a36952fb8c8dc6daefb2fadb07c5212f560880e",
+    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "token1": "0xfc5a1a6eb076a2c7ad06ed22c90d7e710e35ad0a",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x23d17764f41aea93fdbb5beffa83571f0bf3f8b2",
+    "token0": "0x02f92800f57bcd74066f5709f1daa1a4302df875",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0xaa89ba37d1975ae294974ebb33db9d4b5324f2f2",
+    "token0": "0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f",
+    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "dex": "pancakeswap"
+  },
+  {
+    "pair_address": "0x32a5746ba6826828716cc1a394bc33301ebc7656",
+    "token0": "0xf97f4df75117a78c1a5a0dbb814af92458539fb4",
+    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x7cccba38e2d959fe135e79aebb57ccb27b128358",
     "token0": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "dex": "camelot_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0xa0410e8fab72066882c624b8251b53baa7c39841",
+    "token0": "0x9265debda3bbb33602707d480a259521d844123f",
+    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "dex": "sushiswap"
+  },
+  {
+    "pair_address": "0xbbf3209130df7d19356d72eb8a193e2d9ec5c234",
+    "token0": "0x37a645648df29205c6261289983fb04ecd70b4b3",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x8cc8093218bcac8b1896a1eed4d925f6f6ab289f",
+    "token0": "0x3d9907f9a368ad0a51be60f7da3b97cf940982d8",
+    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
+    "dex": "camelot_v2"
+  },
+  {
+    "pair_address": "0xbc4d874430834e90a4c9baeb3db470cacb0dcce2",
+    "token0": "0x13ad51ed4f1b7e9dc168d8a00cb3f4ddd85efa60",
+    "token1": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x560093b297e9c149e8566f329122c1790b4da306",
+    "token0": "0x0c1c1c109fe34733fca54b82d7b46b75cfb71f6e",
+    "token1": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x8d68772af387a003cc74f993822b3b7f082c23bc",
+    "token0": "0xfa7f8980b0f1e64a2062791cc3b0871572f1f7f0",
+    "token1": "0xf97f4df75117a78c1a5a0dbb814af92458539fb4",
+    "dex": "uniswap_v2"
+  },
+  {
+    "pair_address": "0x59d72ddb29da32847a4665d08ffc8464a7185fae",
+    "token0": "0x539bde0d7dbd336b79148aa742883198bbf60342",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x8c9d230d45d6cfee39a6680fb7cb7e8de7ea8e71",
+    "token0": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
+    "dex": "uniswap_v2"
+  },
+  {
+    "pair_address": "0x60451b6ac55e3c5f0f3aee31519670ecc62dc28f",
+    "token0": "0x3d9907f9a368ad0a51be60f7da3b97cf940982d8",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "camelot_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0xd5d1f85e65ce58a4782852f4a845b1d6ca71f1a2",
+    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "token1": "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1",
+    "dex": "pancakeswap"
+  },
+  {
+    "pair_address": "0x4d1576158518dd61924218446c1057cf03138d57",
+    "token0": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
+    "dex": "sushiswap"
+  },
+  {
+    "pair_address": "0xad198ad5f32cba24bcafa6e9ffece312c2ddcd6f",
+    "token0": "0xfa7f8980b0f1e64a2062791cc3b0871572f1f7f0",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "pancakeswap"
+  },
+  {
+    "pair_address": "0x6985cb98ce393fce8d6272127f39013f61e36166",
+    "token0": "0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f",
     "token1": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
     "dex": "uniswap_v2"
   },
   {
-    "pair_address": "0x57b85fef094e10b5eecdf350af688299e9553378",
+    "pair_address": "0xc82819f72a9e77e2c0c3a69b3196478f44303cf4",
     "token0": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
-    "token1": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x54076c901d4fdf76c1fa1f77fafc3fc1022adbe5",
+    "token0": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "token1": "0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f",
+    "dex": "pancakeswap"
+  },
+  {
+    "pair_address": "0x105ba85d9047daf3f9fe941d8188d4b9a6900388",
+    "token0": "0x6985884c4392d348587b19cb9eaaf157f13271cd",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "camelot_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x17c14d2c404d167802b16c450d3c99f88f2c4f4d",
+    "token0": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
+    "dex": "uniswap_v2"
+  },
+  {
+    "pair_address": "0xa961f0473da4864c5ed28e00fcc53a3aab056c1b",
+    "token0": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "token1": "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0xd1e1ac29b31b35646eabd77163e212b76fe3b6a2",
+    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
     "dex": "sushiswap"
   },
   {
-    "pair_address": "0x3797927e7fc20f13f46b295f8889ea8050cb5e21",
-    "token0": "0x6efa9b8883dfb78fd75cd89d8474c44c3cbda469",
+    "pair_address": "0x41dcbcc79923f5508b4a49d78000309052938327",
+    "token0": "0xdb298285fe4c5410b05390ca80e8fbe9de1f259b",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x8f93eaae544e8f5eb077a1e09c1554067d9e2ca8",
+    "token0": "0x3e6648c5a70a150a88bce65f4ad4d506fe15d2af",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "sushiswap"
+  },
+  {
+    "pair_address": "0xb791ad21ba45c76629003b4a2f04c0d544406e37",
+    "token0": "0x912ce59144191c1204e64559fe8253a0e49e6548",
+    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0xbbe36e6f0331c6a36ab44bc8421e28e1a1871c1e",
+    "token0": "0xf97f4df75117a78c1a5a0dbb814af92458539fb4",
+    "token1": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "dex": "uniswap_v2"
+  },
+  {
+    "pair_address": "0x16062f8871da1b53dc990ebc6765868ddce1e5be",
+    "token0": "0xfa7f8980b0f1e64a2062791cc3b0871572f1f7f0",
+    "token1": "0xba5ddd1f9d7f570dc94a51479a000e3bce967196",
+    "dex": "uniswap_v2"
+  },
+  {
+    "pair_address": "0xf0428617433652c9dc6d1093a42adfbf30d29f74",
+    "token0": "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1",
+    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
+    "dex": "uniswap_v2"
+  },
+  {
+    "pair_address": "0xe4c5b9eab6d9861d4ded42c3f44224a22aae77d5",
+    "token0": "0x82248d53de2b7608caf53978a8e8c238dc42403a",
+    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "dex": "pancakeswap"
+  },
+  {
+    "pair_address": "0xa8bd646f72ea828ccbc40fa2976866884f883409",
+    "token0": "0x6694340fc020c5e6b96567843da2df01b2ce1eb6",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0xa79fd76ca2b24631ec3151f10c0660a30bc946e7",
+    "token0": "0xf97f4df75117a78c1a5a0dbb814af92458539fb4",
+    "token1": "0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f",
+    "dex": "uniswap_v2"
+  },
+  {
+    "pair_address": "0x941f4ac07d2526258fc9a07a6c9a23715968b419",
+    "token0": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
+    "dex": "zyberswap",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0xc35aa1cec34e02a8acc3e5f79c22be364823094c",
+    "token0": "0xd77b108d4f6cefaa0cae9506a934e825becca46e",
+    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
+    "dex": "camelot_v2"
+  },
+  {
+    "pair_address": "0x80a9ae39310abf666a87c743d6ebbd0e8c42158e",
+    "token0": "0xfc5a1a6eb076a2c7ad06ed22c90d7e710e35ad0a",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "uniswap_v2"
+  },
+  {
+    "pair_address": "0x90ad8c666f4ce24c822e6ead6b54f3be96351048",
+    "token0": "0x09199d9a5f4448d0848e4395d065e1ad9c4a1f74",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "camelot_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x98e4104de09f4da0529a6760ada3f310fe7eeba6",
+    "token0": "0x3ed03e95dd894235090b3d4a49e0c3239edce59e",
     "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
     "dex": "uniswap_v2"
   },
   {
-    "pair_address": "0xaffbe59f6dd93f0bb129f0cfb94d84c2fb87f39f",
-    "token0": "0x4749881d148d91f63b69abf6a67fed139b233ca6",
+    "pair_address": "0xb7c9609cc9083e135d9315c355db4334c07e7c2c",
+    "token0": "0x080f6aed32fc474dd5717105dba5ea57268f46eb",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x53c6ca2597711ca7a73b6921faf4031eedf71339",
+    "token0": "0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f",
+    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "dex": "uniswap_v2"
+  },
+  {
+    "pair_address": "0x5255a4115bf7b98cc5cb037f24a8f12527c04e45",
+    "token0": "0xeb466342c4d449bc9f53a865d5cb90586f405215",
+    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
+    "dex": "pancakeswap"
+  },
+  {
+    "pair_address": "0xc1ad239594c165bd4d8847d281232172a4520818",
+    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
+    "dex": "camelot_v2"
+  },
+  {
+    "pair_address": "0x87425d8812f44726091831a9a109f4bdc3ea34b4",
+    "token0": "0x3d9907f9a368ad0a51be60f7da3b97cf940982d8",
+    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
+    "dex": "camelot_v2"
+  },
+  {
+    "pair_address": "0x337688357575c80c1af538cd5475f421841950cf",
+    "token0": "0x6e7496ad7bfa645077ca32513da6a2508b7ac459",
+    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "dex": "sushiswap"
+  },
+  {
+    "pair_address": "0xe8bb56ee968333bf18f9cbbe8eeef350540f9607",
+    "token0": "0xaf88d065e77c8cc2239327c5edb3a432268e5831",
+    "token1": "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",
+    "dex": "pancakeswap"
+  },
+  {
+    "pair_address": "0x2760cc828b2e4d04f8ec261a5335426bb22d9291",
+    "token0": "0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f",
+    "token1": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "dex": "ramses",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0xd387c40a72703b38a5181573724bcaf2ce6038a5",
+    "token0": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "dex": "trader_joe",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x42161084d0672e1d3f26a9b53e653be2084ff19c",
+    "token0": "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",
+    "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
+    "dex": "uniswap_v3",
+    "fee_tier": 3000
+  },
+  {
+    "pair_address": "0x19e3c834e96a08a9806c9fd2a4628c4ac5c852cd",
+    "token0": "0xe9f5a048103293aeeb05f1d986bb91ef38410d8e",
     "token1": "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",
     "dex": "uniswap_v2"
   }

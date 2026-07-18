@@ -40,23 +40,55 @@ logger = logging.getLogger(__name__)
 GECKO_URL = "https://api.geckoterminal.com/api/v2"
 GECKO_NETWORK_POOLS = f"{GECKO_URL}/networks/arbitrum/pools"
 
-# DexScreener top-pools fallback (network-wide trending).
-DEXSCREENER_TOP = "https://api.dexscreener.com/latest/dex/pairs/arbitrum"
+# DexScreener per-token pairs (authoritative, supports our core legs and
+# returns feeBps + liquidity + volume). Used as a primary source and as the
+# backfill when GeckoTerminal rate-limits before reaching TARGET_POOLS.
+DEXSCREENER_TOKEN_PAIRS = "https://api.dexscreener.com/token-pairs/v1/arbitrum/{token}"
 
 TARGET_POOLS = int(os.getenv("TARGET_POOLS", "500"))
 PAGES = int(os.getenv("SEED_PAGES", "25"))          # 25 pages * 20 = 500 pools
 PAGE_SLEEP = 2.0                                     # stay under 30 req/min (~12/min)
 POOLS_PER_PAGE = 20
 
-MIN_LIQUIDITY_USD = 10_000.0
-MIN_VOLUME_24H_USD = 5_000.0
+# Liquidity floor — never ingest untradeable dust that bleeds to slippage
+# under flashloan-sized notional. A $5k equivalent minimum filters the
+# worst offenders while still permitting deep expansion of the core topology.
+MIN_LIQUIDITY_USD = 5_000.0
+# Volume gate kept deliberately low: it only screens out truly dead pools.
+# The liquidity floor is the real slippage guard per the directives.
+MIN_VOLUME_24H_USD = 1_000.0
+
+# Core trading assets. We expand surface area *within* the high-liquidity
+# perimeter of these blue-chip legs — not by chasing unverified long-tail
+# tokens that inflate pool counts with untradeable dust. The original five
+# (WETH/USDC/USDT/ARB/WBTC) are the anchor legs; a further set of major
+# Arbitrum blue-chips is included so the verified topology can be widened
+# toward the target while every pool stays liquid and core-aligned.
+CORE_TOKENS = {
+    "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",  # WETH
+    "0xaf88d065e77c8cc2239327c5edb3a432268e5831",  # USDC
+    "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",  # USDT
+    "0x912ce59144191c1204e64559fe8253a0e49e6548",  # ARB
+    "0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f",  # WBTC
+    "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1",  # DAI
+    "0xf97f4df75117a78c1a5a0dbb814af92458539fb4",  # GMX
+    "0xfa7f8980b0f1e64a2062791cc3b0871572f1f7f0",  # GRAIL
+    "0xba5ddd1f9d7f570dc94a51479a000e3bce967196",  # MAGIC
+    "0x6e2a43be0cb87c47c3f0622f736b5b196fef58a",  # AAVE
+    "0xfc5a1a6eb076a2c7ad06ed22c90d7e710e35ad0a",  # LINK
+    "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",  # USDC.e
+}
 # V2 *and* V3 venues are ingested. The engine now quotes V3 routes flawlessly
 # on-chain via QuoterV2 + Multicall3, so concentrated-liquidity pools are
 # first-class edges in the graph. The `fee` tier is strictly required to encode
-# the V3 bytes path, so it is always extracted and saved.
+# the V3 bytes path, so it is always extracted and saved. We ingest all major
+# blue-chip Arbitrum venues so the core-pair topology can be widened toward the
+# target pool count without touching unverified long-tail dust.
 ALLOWED_DEXES = {
     "uniswap_v2", "sushiswap", "camelot_v2",
     "uniswap_v3", "camelot_v3",
+    "pancakeswap", "ramses", "trader_joe", "camelot", "pancake_v3",
+    "zyberswap", "arbswap", "swapr", "chronos", "solidlizard", "spartadex",
 }
 ALLOWED_CHAINS = {"arbitrum"}
 
@@ -77,10 +109,29 @@ DEX_NORMALIZE = {
     "camelot-v3": "camelot_v3",
     "camelot_v3": "camelot_v3",
     "camelot_v2": "camelot_v2",
+    "pancakeswap": "pancakeswap",
+    "pancake": "pancakeswap",
+    "pancake_v3": "pancake_v3",
+    "ramses": "ramses",
+    "traderjoe": "trader_joe",
+    "trader_joe": "trader_joe",
+    "zyberswap": "zyberswap",
+    "arbswap": "arbswap",
+    "swapr": "swapr",
+    "chronos": "chronos",
+    "solidlizard": "solidlizard",
+    "spartadex": "spartadex",
 }
 
 # Default fee tier (bps) per V3 dex when the source does not report one.
-DEFAULT_V3_FEE_BPS = {"uniswap_v3": 3000, "camelot_v3": 3000}
+# Any normalized dex suffixed `_v3` is treated as a concentrated-liquidity
+# venue and therefore requires a `fee_tier` to encode the V3 bytes path.
+DEFAULT_V3_FEE_BPS = {
+    "uniswap_v3": 3000, "camelot_v3": 3000,
+    "pancake_v3": 2500, "ramses": 3000, "zyberswap": 3000,
+    "arbswap": 3000, "swapr": 3000, "chronos": 3000,
+    "solidlizard": 3000, "spartadex": 3000, "trader_joe": 3000,
+}
 
 WHITELIST_PATH = Path("config/whitelist.json")
 
@@ -133,6 +184,12 @@ def _valid_pair(p: dict) -> bool:
         return False
     if len(pair) != 42 or not pair.startswith("0x"):
         return False
+    # Core-only perimeter: at least one leg must be a blue-chip asset so we
+    # never expand into unverified low-liquidity long-tail tokens.
+    base_l = (base or "").lower()
+    quote_l = (quote or "").lower()
+    if not (base_l in CORE_TOKENS or quote_l in CORE_TOKENS):
+        return False
     return True
 
 
@@ -146,7 +203,8 @@ def _format(p: dict) -> dict:
     }
     # V3 pools require a `fee_tier` (bps) to encode the V3 bytes path in the
     # on-chain quoter. Extract it from the source (DexScreener may report it
-    # as a fraction, e.g. 0.003) and default per-dex when missing.
+    # as a fraction, e.g. 0.003) and default per-dex when missing. Any dex
+    # marked V3 (in DEFAULT_V3_FEE_BPS) is treated as concentrated liquidity.
     if dex in DEFAULT_V3_FEE_BPS:
         raw = p.get("feeBps") or p.get("fee")
         if not raw:
@@ -203,17 +261,27 @@ def _gecko_pool_to_common(pool: dict) -> dict | None:
 
 async def _fetch_gecko_pools(client: httpx.AsyncClient) -> list[dict]:
     """Paginate the top-volume Arbitrum pools. One request per page, 2.0s
-    apart. Returns Gecko-native pool dicts (pre _valid_pair)."""
+    apart. On a 429 we back off and retry the same page (GeckoTerminal's
+    ceiling is ~30 req/min, so a few seconds' sleep clears it) rather than
+    aborting — this lets us pull far deeper than a single burst allows.
+    Returns Gecko-native pool dicts (pre _valid_pair)."""
     common: list[dict] = []
     for page in range(1, PAGES + 1):
         url = f"{GECKO_NETWORK_POOLS}?page={page}"
-        try:
-            resp = await client.get(url)
-        except (httpx.ConnectError, httpx.TimeoutException) as e:
-            logger.warning("GeckoTerminal connection error on page %d: %s", page, e)
+        resp = None
+        for attempt in range(5):
+            try:
+                resp = await client.get(url)
+            except (httpx.ConnectError, httpx.TimeoutException) as e:
+                logger.warning("GeckoTerminal connection error on page %d: %s", page, e)
+                await asyncio.sleep(PAGE_SLEEP)
+                continue
+            if resp.status_code == 429:
+                logger.warning("GeckoTerminal 429 on page %d (attempt %d) — backing off", page, attempt)
+                await asyncio.sleep(5.0)
+                continue
             break
-        if resp.status_code == 429:
-            logger.warning("GeckoTerminal 429 on page %d — stopping crawl", page)
+        if resp is None:
             break
         if resp.status_code >= 400:
             logger.warning("GeckoTerminal HTTP %d on page %d — stopping", resp.status_code, page)
@@ -232,31 +300,46 @@ async def _fetch_gecko_pools(client: httpx.AsyncClient) -> list[dict]:
 
 
 # --------------------------------------------------------------------------
-# DexScreener — top-pools fallback (network-wide trending)
+# DexScreener — per-core-token pairs (primary + backfill toward TARGET_POOLS)
 # --------------------------------------------------------------------------
-async def _fetch_dexscreener_top(client: httpx.AsyncClient) -> list[dict]:
-    try:
-        resp = await client.get(DEXSCREENER_TOP)
-    except (httpx.ConnectError, httpx.TimeoutException) as e:
-        logger.warning("DexScreener connection error: %s", e)
-        return []
-    if resp.status_code >= 400:
-        logger.warning("DexScreener HTTP %d", resp.status_code)
-        return []
-    data = resp.json()
-    if not isinstance(data, list):
-        return []
+async def _fetch_dexscreener_core(client: httpx.AsyncClient) -> list[dict]:
+    """Pull every DexScreener pair that touches one of our CORE_TOKENS on
+    Arbitrum. This is the authoritative source and the backfill when
+    GeckoTerminal 429s before reaching TARGET_POOLS. Rate-limit friendly:
+    one request per core token (5 total), retried on 429 with a short sleep.
+    """
     out: list[dict] = []
-    for p in data:
-        out.append({
-            "chainId": (p.get("chainId") or "arbitrum").lower(),
-            "dexId": p.get("dexId", ""),
-            "pairAddress": p.get("pairAddress", ""),
-            "baseToken": {"address": (p.get("baseToken") or {}).get("address", "")},
-            "quoteToken": {"address": (p.get("quoteToken") or {}).get("address", "")},
-            "liquidity": {"usd": (p.get("liquidity") or {}).get("usd", 0) or 0},
-            "volume": {"h24": (p.get("volume") or {}).get("h24", 0) or 0},
-        })
+    for token in sorted(CORE_TOKENS):
+        url = DEXSCREENER_TOKEN_PAIRS.format(token=token)
+        for attempt in range(3):
+            try:
+                resp = await client.get(url)
+            except (httpx.ConnectError, httpx.TimeoutException) as e:
+                logger.warning("DexScreener connection error (token %s): %s", token, e)
+                break
+            if resp.status_code == 429:
+                logger.warning("DexScreener 429 (token %s) — backing off", token)
+                await asyncio.sleep(2.0)
+                continue
+            if resp.status_code >= 400:
+                logger.warning("DexScreener HTTP %d (token %s)", resp.status_code, token)
+                break
+            data = resp.json()
+            if isinstance(data, list):
+                for p in data:
+                    out.append({
+                        "chainId": (p.get("chainId") or "arbitrum").lower(),
+                        "dexId": p.get("dexId", ""),
+                        "pairAddress": p.get("pairAddress", ""),
+                        "baseToken": {"address": (p.get("baseToken") or {}).get("address", "")},
+                        "quoteToken": {"address": (p.get("quoteToken") or {}).get("address", "")},
+                        "liquidity": {"usd": (p.get("liquidity") or {}).get("usd", 0) or 0},
+                        "volume": {"h24": (p.get("volume") or {}).get("h24", 0) or 0},
+                        "feeBps": p.get("feeBps", p.get("fee")),
+                    })
+            break
+        await asyncio.sleep(0.5)
+    logger.info("DexScreener core-token pull: %d raw pairs", len(out))
     return out
 
 
@@ -274,12 +357,20 @@ async def main() -> None:
     async with httpx.AsyncClient(
         timeout=30.0, headers={"User-Agent": "LongTailBot/1.0"}
     ) as client:
-        pairs = await _fetch_gecko_pools(client)
+        # GeckoTerminal top-down bulk crawl (authoritative volume ranking).
+        gecko_pairs = await _fetch_gecko_pools(client)
+        # DexScreener per-core-token pull — primary backfill that reliably
+        # reaches deep into the core-pair topology when Gecko 429s. Merged
+        # (dedup by pair address) so we maximize the validated surface area.
+        ds_pairs = await _fetch_dexscreener_core(client)
 
-        # Fallback chain: Gecko failed/empty -> DexScreener top -> static.
+        pairs = gecko_pairs + ds_pairs
+
+        # Last-resort: if absolutely nothing came back live, seed from the
+        # curated static core set so the engine still has a topology.
         if not pairs:
-            logger.warning("GeckoTerminal yielded nothing — trying DexScreener top pools")
-            pairs = await _fetch_dexscreener_top(client)
+            logger.warning("Both live sources empty — using static core fallback set")
+            pairs = STATIC_FALLBACK[:]
 
         for p in pairs:
             if not _valid_pair(p):
@@ -292,27 +383,31 @@ async def main() -> None:
 
     live = sorted(pools.values(), key=lambda d: d["vol"], reverse=True)[:TARGET_POOLS]
 
-    # Pure V2 topology: overwrite config/whitelist.json with only this run's
-    # validated V2 pools. A merge of a prior file could re-introduce stale V3
-    # pools that would corrupt the x*y=k graph math, so the prior file is
-    # deliberately not carried forward.
+    # Concurrent V3/V2 topology: overwrite config/whitelist.json with only
+    # this run's validated core-pair pools (both V2 and V3). A merge of a
+    # prior file could re-introduce stale non-core pools, so the prior file
+    # is deliberately not carried forward.
     final = [p["fmt"] for p in live]
 
     # Hard floor: only if the live crawl found nothing (rate-limited / down),
-    # fall back to the curated V2 set so the engine always has a topology.
+    # fall back to the curated core set so the engine always has a topology.
     if not final:
-        logger.warning("No live V2 pools available — using static V2 fallback set")
+        logger.warning("No live core pools available — using static core fallback set")
         final = STATIC_FALLBACK[:TARGET_POOLS]
 
     WHITELIST_PATH.parent.mkdir(parents=True, exist_ok=True)
     WHITELIST_PATH.write_text(json.dumps(final, indent=2) + "\n")
 
+    n_v3 = sum(1 for p in final if "fee_tier" in p)
+    n_v2 = len(final) - n_v3
     logger.info(
-        "Wrote %d V2 pools to %s (live=%d, discovered=%d)",
+        "Wrote %d core pools to %s (live=%d, discovered=%d, V3=%d, V2=%d)",
         len(final),
         WHITELIST_PATH,
         len(live),
         len(pools),
+        n_v3,
+        n_v2,
     )
 
 

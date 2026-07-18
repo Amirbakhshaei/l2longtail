@@ -13,6 +13,7 @@ DEX_ROUTERS = {
     "trader_joe": "0x7BFdb40e7c1B2A47aF4E7008bC2b1a2b5D7F0b7c",
     "uniswap_v3": "0xE592427A0AEce92De3Edee1F18E0157C05861564",
     "camelot_v3": "0x1F721759C4aC7284dA8a1520C4bE6A62c5D6D6",
+    "pancakeswap": "0x1b81D678ffcB9EA8ba2F1e3cAaE9c14Bb9c7E3",
 }
 
 # Uniswap/Camelot V3 SwapRouter02 (exactInputSingle) + QuoterV2 addresses.
