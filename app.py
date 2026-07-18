@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import sys
 import threading
 from pathlib import Path
 
@@ -20,6 +21,12 @@ import torch
 from dotenv import load_dotenv
 
 load_dotenv()
+
+# Ensure the repo root (where the ``db``/``infra``/``config`` packages
+# live) is importable no matter what CWD the HF Space launcher uses.
+_REPO_ROOT = Path(__file__).resolve().parent
+if str(_REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(_REPO_ROOT))
 
 
 def _persistent_path(name: str) -> Path:
@@ -38,15 +45,25 @@ def _persistent_path(name: str) -> Path:
 
 
 # Engine + UI logs are mirrored to a file (under /data on Spaces) so the
-# Gradio viewer can tail real activity instead of only stdout.
+# Gradio viewer can tail real activity instead of only stdout. A StreamHandler
+# to stdout is added *alongside* the file handler so the same records also
+# land in the Space's captured stdout (Gradio's own banner uses stdout,
+# so without this the engine logs would be invisible in the Space logs).
 LOG_FILE_PATH = str(_persistent_path("engine.log"))
 
-logging.basicConfig(
-    level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    filename=LOG_FILE_PATH,
-    filemode="a",
+_root = logging.getLogger()
+_root.setLevel(getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO))
+_file_handler = logging.FileHandler(LOG_FILE_PATH, mode="a")
+_file_handler.setFormatter(
+    logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 )
+_root.addHandler(_file_handler)
+_stdout_handler = logging.StreamHandler(sys.stdout)
+_stdout_handler.setFormatter(
+    logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+)
+_root.addHandler(_stdout_handler)
+
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
 
@@ -59,13 +76,26 @@ def zero_gpu_gatekeeper_bypass(n: float) -> str:
 
 
 def start_arbitrage_engine() -> None:
-    """Initializes and executes the async event loop within a daemon background thread."""
-    loop = asyncio.new_event_loop()
-    asyncio.set_event_loop(loop)
-    loop.run_until_complete(_run_engine())
+    """Runs the async engine loop inside a daemon background thread.
+
+    Uses ``asyncio.run`` (not a manually-owned loop) so the loop is
+    created *and* closed by the runtime — this prevents the Python 3.12
+    ``BaseEventLoop.__del__`` "Invalid file descriptor: -1" warning that
+    fires when a stray ``set_event_loop`` loop is garbage-collected after
+    its self-pipe is already torn down (e.g. on an HF SSR restart).
+    """
+    logger.info(
+        "[STARTUP] engine thread spawned (mode=%s)",
+        "PAPER" if os.getenv("DRY_RUN", "true") == "true" else "LIVE",
+    )
+    try:
+        asyncio.run(_run_engine())
+    except Exception as e:  # noqa: BLE001
+        logger.exception("[STARTUP] engine loop terminated: %s", e)
 
 
 async def _run_engine() -> None:
+    logger.info("[STARTUP] importing engine modules…")
     from db.cleared_tokens import ClearedTokensDB
     from infra.flea_market_discovery import FleaMarketDiscovery
     from infra.rate_limiter import TokenBucketRateLimiter
@@ -74,12 +104,20 @@ async def _run_engine() -> None:
     from process_a_indexer import ProcessAIndexer
     from process_b_sniper import ProcessBSniper
     from infra.websocket_listener import WebSocketListener, LogsPoller
+    logger.info("[STARTUP] engine modules imported")
 
     dry_run = os.getenv("DRY_RUN", "true").lower() == "true"
     lookback = int(os.getenv("SYNC_LOOKBACK_BLOCKS", "50"))
     from config.settings import Settings
 
-    settings = Settings()
+    try:
+        settings = Settings()
+    except Exception as e:  # noqa: BLE001
+        logger.error(
+            "[STARTUP] config/Settings failed (check Space Secrets): %s", e
+        )
+        return
+    logger.info("[STARTUP] config loaded (Secrets resolved)")
     wss_url = settings.wss_rpc_url or (
         "wss://"
         + settings.fallback_rpc_url.replace("https://", "", 1)
@@ -195,10 +233,17 @@ async def _run_engine() -> None:
 
     try:
         await asyncio.gather(loop_a(), loop_b())
+    except Exception as e:  # noqa: BLE001
+        # A crash here would otherwise be swallowed by the daemon thread and
+        # never surface in the Space logs. Log it loudly.
+        logger.exception("[STARTUP] engine loops crashed: %s", e)
     finally:
         # Close the persistent HTTP/2 client so the event loop does not emit
         # a "ValueError: Invalid file descriptor" traceback on __del__.
-        await rpc.close()
+        try:
+            await rpc.close()
+        except Exception:  # noqa: BLE001
+            pass
         logger.info("[SHUTDOWN] RPC client closed, engine stopped")
 
 
