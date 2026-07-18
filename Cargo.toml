@@ -1,0 +1,33 @@
+[package]
+name = "alloy-executor"
+version = "0.1.0"
+edition = "2021"
+description = "Native Rust hot-path for the Arbitrum long-tail MEV engine: packed path encoding, local signing, and concurrent multi-RPC broadcast."
+license = "MIT"
+
+[lib]
+# Compile to a C-compatible dynamic library so Maturin can wrap it as the
+# `alloy_executor` Python extension module.
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+# PyO3 bridges Rust -> Python. `extension-module` links against the host
+# interpreter and MUST be set when building the wheel (Maturin handles it).
+pyo3 = { version = "0.23", features = ["extension-module"] }
+# Tokio drives the native async runtime that blasts RPC requests on raw
+# OS threads, independent of the Python event loop.
+tokio = { version = "1", features = ["full"] }
+# Alloy provides the Ethereum types, ABI packing, Secp256k1 signer, and
+# the JSON-RPC client used to fire eth_sendRawTransaction.
+alloy = { version = "0.7", features = [
+    "providers",
+    "signers",
+    "signer-local",
+    "rpc-types",
+    "network",
+    "sol-types",
+] }
+
+[build-dependencies]
+# Keep pyo3 in lockstep with the running interpreter during `maturin develop`.
+pyo3-build-config = "0.23"

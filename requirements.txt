@@ -20,6 +20,12 @@ prometheus-client>=0.21.0
 py-solc-x>=2.0.0
 
 # ===========================================================================
+# Hybrid Rust hot-path (PyO3 + Alloy) build tooling
+# `maturin develop` compiles src/lib.rs -> the `alloy_executor` extension.
+# ===========================================================================
+maturin>=1.7.0
+
+# ===========================================================================
 # HuggingFace Spaces UI only (optional — not needed on a headless VPS)
 # ===========================================================================
 # gradio>=4.0.0

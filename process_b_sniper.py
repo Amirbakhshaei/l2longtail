@@ -839,9 +839,31 @@ class GraphArbEngine:
 
         logger.info("GRAPH SIM PASS: %s net=$%.4f", cycle.tokens[1][:10], net_usd)
 
-        ok, tx_hash = await self.flashloan.execute(
-            amount_in, path, routers, self.live_executor, fee_tiers, is_v3_flags
+        data = self.flashloan.build_execute_calldata(
+            amount_in, path, routers, fee_tiers, is_v3_flags
         )
+
+        if self.dry_run:
+            # Paper mode: no signing, no broadcast.
+            ok, tx_hash = True, "0x" + "0" * 64
+        elif self.live_executor is None:
+            logger.warning("GRAPH EXEC ABORT: live executor not configured")
+            ok, tx_hash = False, "no live executor"
+        else:
+            # Sign exactly once, locally, at the standard base fee (no PGA /
+            # bribe). Fire the signed payload to every execution RPC
+            # concurrently via a detached background task so the indexer
+            # evaluation loop never blocks on network latency. The first
+            # endpoint to reach Arbitrum's FCFS sequencer wins; collision
+            # errors from the slower peers are swallowed inside broadcast.
+            signed = self.live_executor.sign_calldata(self.executor, data)
+            if not signed:
+                ok, tx_hash = False, "sign failed"
+            else:
+                asyncio.create_task(
+                    self.rpc.broadcast_raw_tx(signed)
+                )
+                ok, tx_hash = True, "shotgun_broadcast"
 
         state = ExecutionState(
             trade_id=f"graph_{cycle.tokens[1][:8]}_{int(time.time()*1000)}",

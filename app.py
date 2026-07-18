@@ -12,6 +12,7 @@ import asyncio
 import logging
 import os
 import threading
+from pathlib import Path
 
 import gradio as gr
 import spaces
@@ -20,14 +21,34 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+
+def _persistent_path(name: str) -> Path:
+    """Resolve a state/log path.
+
+    On Hugging Face Spaces the persistent volume is mounted at ``/data``;
+    writing there survives container rebuilds. Locally (or any host without
+    ``/data``) we fall back to the current working directory so dev runs
+    are unaffected.
+    """
+    data_dir = Path("/data")
+    if data_dir.is_dir():
+        data_dir.mkdir(parents=True, exist_ok=True)
+        return data_dir / name
+    return Path(name)
+
+
+# Engine + UI logs are mirrored to a file (under /data on Spaces) so the
+# Gradio viewer can tail real activity instead of only stdout.
+LOG_FILE_PATH = str(_persistent_path("engine.log"))
+
 logging.basicConfig(
     level=getattr(logging, os.getenv("LOG_LEVEL", "INFO").upper(), logging.INFO),
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    filename=LOG_FILE_PATH,
+    filemode="a",
 )
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logger = logging.getLogger(__name__)
-
-LOG_FILE_PATH = "paper_trade_1h.log"
 
 
 @spaces.GPU
@@ -86,9 +107,10 @@ async def _run_engine() -> None:
 
     rate_limiter = TokenBucketRateLimiter(rate=10, capacity=5)
     rpc = RPCManager(
-        primary_url or fallback_url, fallback_url, "", rate_limiter
+        primary_url or fallback_url, fallback_url, "",
+        rate_limiter, execution_rpcs=settings.execution_rpcs_list,
     )
-    cleared_db = ClearedTokensDB()
+    cleared_db = ClearedTokensDB(db_path=_persistent_path("cleared_tokens.db"))
 
     whitelist_path = os.getenv("WHITELIST_PATH", "config/whitelist.json")
     flea = FleaMarketDiscovery(rpc, whitelist_path=whitelist_path)
@@ -182,15 +204,10 @@ async def _run_engine() -> None:
 
 def get_latest_terminal_logs() -> str:
     """Reads the tail end of the trading log to display inside the Gradio UI."""
-    if os.getenv("DRY_RUN", "true") != "true":
-        target_log = "live_trade.log"
-    else:
-        target_log = LOG_FILE_PATH
-
-    if not os.path.exists(target_log):
+    if not os.path.exists(LOG_FILE_PATH):
         return "Engine initialized. Waiting for Sync events to populate logs..."
     try:
-        with open(target_log) as log_file:
+        with open(LOG_FILE_PATH) as log_file:
             lines = log_file.readlines()
             return "".join(lines[-35:])
     except Exception as e:

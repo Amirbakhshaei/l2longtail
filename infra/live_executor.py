@@ -293,6 +293,42 @@ class LiveExecutor:
                 tx_hash="", status="FAILED", error=str(e)
             )
 
+    def sign_calldata(
+        self, to_address: str, data: str, value: int = 0
+    ) -> str | None:
+        """Sign a contract call locally and return the raw hex (no broadcast).
+
+        Uses the standard base fee — no PGA/bribe logic. The caller is
+        responsible for delivery (e.g. shotgun broadcast via RPCManager).
+        Returns None if no key is configured or signing fails."""
+        if not self.account:
+            logger.error("sign_calldata: no private key configured")
+            return None
+        try:
+            to = Web3.to_checksum_address(to_address)
+            nonce = self.w3.eth.get_transaction_count(self.account.address)
+            gas_price = self.w3.eth.gas_price
+            max_fee = int(gas_price * 1.5)
+            max_priority = self.w3.eth.max_priority_fee
+
+            tx = {
+                "from": self.account.address,
+                "to": to,
+                "value": value,
+                "gas": 600000,
+                "maxFeePerGas": max_fee,
+                "maxPriorityFeePerGas": max_priority,
+                "nonce": nonce,
+                "chainId": 42161,
+                "data": bytes.fromhex(data[2:]),
+                "type": 2,
+            }
+            signed_tx = self.account.sign_transaction(tx)
+            return "0x" + signed_tx.raw_transaction.hex()
+        except Exception as e:  # noqa: BLE001
+            logger.error("sign_calldata failed: %s", e)
+            return None
+
     def get_nonce(self) -> int:
         if not self.account:
             return 0

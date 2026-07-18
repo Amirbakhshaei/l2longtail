@@ -94,7 +94,10 @@ async def main() -> None:
     executor_address = os.getenv("FLASHLOAN_EXECUTOR_ADDRESS", "")
 
     rate_limiter = TokenBucketRateLimiter(rate=10, capacity=5)
-    rpc = RPCManager(primary_url, fallback_url, "", rate_limiter)
+    rpc = RPCManager(
+        primary_url, fallback_url, "", rate_limiter,
+        execution_rpcs=settings.execution_rpcs_list,
+    )
     cleared_db = ClearedTokensDB()
 
     whitelist_path = os.getenv("WHITELIST_PATH", "config/whitelist.json")

@@ -9,6 +9,12 @@ class Settings(BaseSettings):
     ankr_rpc_url: str = ""
     fallback_rpc_url: str = "https://arb1.arbitrum.io/rpc"
     flashbots_rpc_url: str = "https://rpc.flashbots.net/fast"
+    # Comma-separated list of execution RPCs for simultaneous broadcast
+    # (shotgun). The signed tx is fired to all concurrently; the first to
+    # reach Arbitrum's FCFS sequencer wins. Empty -> [primary, fallback].
+    execution_rpcs: str = ""
+    # Parsed list (populated in model_post_init). Not sourced from env.
+    execution_rpcs_list: list[str] = Field(default_factory=list, exclude=True)
     wss_rpc_url: str = ""
     # Sync transport: "auto" (WSS when WSS_RPC_URL is set, else HTTP polling),
     # "wss" (require WebSocket), or "http" (eth_getLogs polling over HTTPS RPC).
@@ -54,6 +60,9 @@ class Settings(BaseSettings):
     model_config = {"env_file": ".env", "env_file_encoding": "utf-8"}
 
     def model_post_init(self, __context: object) -> None:
+        self.execution_rpcs_list = [
+            u.strip() for u in (self.execution_rpcs or "").split(",") if u.strip()
+        ]
         if not self.ankr_rpc_url:
             self.ankr_rpc_url = (
                 f"https://rpc.ankr.com/arbitrum/{self.ankr_api_key}"
