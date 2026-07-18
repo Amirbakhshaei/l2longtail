@@ -7,7 +7,7 @@ import httpx
 
 logger = logging.getLogger(__name__)
 
-WETH_USDC_POOL = "0xf64dfe17c8b87f012fcf50fbda1d62bfa148366a"
+WETH_USDC_POOL = "0x905dfcD46427C1f93648df0845a1Db4d02d8B8b5"
 GECKOTERMINAL_URL = (
     "https://api.geckoterminal.com/api/v2/networks/arbitrum/tokens"
     "/0x82aF49447D8a07e3bd95BD0d56f35241523fBab1"
@@ -15,6 +15,11 @@ GECKOTERMINAL_URL = (
 WETH_DECIMALS = 18
 USDC_DECIMALS = 6
 CACHE_TTL = 60.0
+
+# Sanity band for a sane WETH/USD price. Rejects garbage on-chain reads
+# (wrong pool, broken reserves) so they are never cached or used.
+MIN_WETH_USD = 100.0
+MAX_WETH_USD = 100_000.0
 
 
 class WETHPriceOracle:
@@ -31,13 +36,13 @@ class WETHPriceOracle:
             return self._cached_price
 
         price = await self._tier1_geckoterminal()
-        if price is not None and price > 0:
+        if price is not None and MIN_WETH_USD <= price <= MAX_WETH_USD:
             self._cached_price = price
             self._cache_ttl = now
             return price
 
         price = await self._tier2_on_chain()
-        if price is not None and price > 0:
+        if price is not None and MIN_WETH_USD <= price <= MAX_WETH_USD:
             self._cached_price = price
             self._cache_ttl = now
             return price
@@ -84,6 +89,12 @@ class WETHPriceOracle:
                 price = (usdc_reserve / 10**USDC_DECIMALS) / (
                     weth_reserve / 10**WETH_DECIMALS
                 )
+                if not (MIN_WETH_USD <= price <= MAX_WETH_USD):
+                    logger.warning(
+                        "Tier 2 on-chain price $%.2f out of sane band — rejecting",
+                        price,
+                    )
+                    return None
                 logger.info("WETH oracle Tier 2 (on-chain): $%.2f", price)
                 return price
         except Exception as e:

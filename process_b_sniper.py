@@ -597,6 +597,7 @@ class GraphArbEngine:
         live_executor=None,
         on_result: Callable[..., Awaitable[None]] | None = None,
         on_opportunity: Callable[..., Awaitable[None]] | None = None,
+        on_scan: Callable[[], None] | None = None,
     ) -> None:
         self.rpc = rpc_manager
         self.oracle = weth_oracle
@@ -608,6 +609,8 @@ class GraphArbEngine:
         self.live_executor = live_executor
         self.on_result = on_result
         self.on_opportunity = on_opportunity
+        # Incremented every time Bellman-Ford runs (drives the [HEARTBEAT]).
+        self.on_scan = on_scan
         # Flashloan capital is unbounded (Balancer V2 0% loan) — no hardcoded
         # cap. The on-chain grid search sizes the true optimum on deep
         # liquidity imbalances (see _evaluate_cycle).
@@ -698,6 +701,8 @@ class GraphArbEngine:
         self._weth_price = weth_price
 
         cycle = self.graph.find_arbitrage_cycle(self.weth)
+        if self.on_scan is not None:
+            self.on_scan()
         if cycle is None:
             return
 
@@ -904,6 +909,8 @@ class ProcessBSniper:
         self._running = False
         self._results: list[ExecutionState] = []
         self._weth_price: float | None = None
+        self.cycles_evaluated: int = 0
+        self._heartbeat_task: asyncio.Task | None = None
 
         # Grid of input sizes (wei) fed to the on-chain Multicall3 grid search.
         # 0.1 WETH, 0.5 WETH, 1.0 WETH, 5.0 WETH, 10.0 WETH
@@ -930,35 +937,71 @@ class ProcessBSniper:
                 live_executor=live_executor,
                 on_result=self._append_result,
                 on_opportunity=on_opportunity,
+                on_scan=self._increment_cycles,
             )
 
     # -- graph path --------------------------------------------------------
+    async def _heartbeat_loop(self) -> None:
+        """Emit a structured discovery heartbeat every 60s for observability."""
+        while self._running:
+            try:
+                await asyncio.sleep(60)
+            except asyncio.CancelledError:
+                break
+            if not self._running:
+                break
+            logger.info(
+                "[HEARTBEAT] Graph active. Evaluated %d potential "
+                "routing cycles in the last 60s.",
+                self.cycles_evaluated,
+            )
+            self.cycles_evaluated = 0
+
     async def run(self, scan_interval: float = 1.0) -> None:
         self._running = True
         if self.graph_mode and self.graph_engine is not None:
             logger.info("Process B: Graph Sniper started (WSS-driven)")
-            while self._running:
-                try:
-                    event = await self.sync_queue.get()
-                    if isinstance(event, V3StateEvent):
-                        await self.graph_engine.process_v3_state(event)
-                    else:
-                        await self.graph_engine.process_sync(event)
-                except Exception as e:
-                    logger.error("Graph sniper cycle failed: %s", e)
+            self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+            try:
+                while self._running:
+                    try:
+                        event = await self.sync_queue.get()
+                        if isinstance(event, V3StateEvent):
+                            await self.graph_engine.process_v3_state(event)
+                        else:
+                            await self.graph_engine.process_sync(event)
+                    except Exception as e:
+                        logger.error("Graph sniper cycle failed: %s", e)
+            finally:
+                if self._heartbeat_task is not None:
+                    self._heartbeat_task.cancel()
+                    try:
+                        await self._heartbeat_task
+                    except asyncio.CancelledError:
+                        pass
             return
 
         logger.info("Process B: Triangular Sniper started (interval=%.1fs)", scan_interval)
-        while self._running:
-            try:
-                await self._scan_cycle()
-            except Exception as e:
-                logger.error("Sniper scan cycle failed: %s", e)
-            await asyncio.sleep(scan_interval)
+        self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
+        try:
+            while self._running:
+                try:
+                    await self._scan_cycle()
+                except Exception as e:
+                    logger.error("Sniper scan cycle failed: %s", e)
+                await asyncio.sleep(scan_interval)
+        finally:
+            if self._heartbeat_task is not None:
+                self._heartbeat_task.cancel()
+                try:
+                    await self._heartbeat_task
+                except asyncio.CancelledError:
+                    pass
 
     # -- triangular path ---------------------------------------------------
     async def _scan_cycle(self) -> None:
         paths = await self.scanner.scan()
+        self.cycles_evaluated += 1
 
         self._weth_price = await self.scanner._get_weth_price()
         if self._weth_price is None:
@@ -1135,6 +1178,9 @@ class ProcessBSniper:
 
     async def _append_result(self, state: ExecutionState) -> None:
         self._results.append(state)
+
+    def _increment_cycles(self) -> None:
+        self.cycles_evaluated += 1
 
     def get_results(self) -> list[ExecutionState]:
         return self._results

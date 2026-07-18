@@ -85,6 +85,23 @@ class RPCManager:
             raise RuntimeError(f"RPC error: {data['error']}")
         return data
 
+    @staticmethod
+    def _is_auth_error(exc: BaseException) -> bool:
+        """A provider auth failure (missing/revoked API key, 401/403). These
+        are permanent for a given key and must fail over immediately rather
+        than burning the transient-retry budget."""
+        if isinstance(exc, httpx.HTTPStatusError):
+            if exc.response.status_code in (401, 403):
+                return True
+            body = (exc.response.text or "").lower()
+            if "unauthorized" in body or "forbidden" in body or "api key" in body:
+                return True
+        elif isinstance(exc, RuntimeError):
+            msg = str(exc).lower()
+            if "unauthorized" in msg or "forbidden" in msg or "api key" in msg:
+                return True
+        return False
+
     async def call(
         self, method: str, params: list[Any] | None = None
     ) -> dict[str, Any]:
@@ -99,6 +116,18 @@ class RPCManager:
             self._consecutive_failures = 0
             return response
         except httpx.HTTPStatusError as e:
+            if self._is_auth_error(e):
+                # Permanent auth failure — switch to the fallback RPC and stay
+                # there. Retrying the same keyed endpoint is futile.
+                if not self._failover_active:
+                    self._failover_active = True
+                    logger.warning(
+                        "RPC auth failure on primary — failing over to fallback RPC"
+                    )
+                await self.rate_limiter.acquire()
+                return await self._http_post(
+                    self.fallback_url, method, params
+                )
             if e.response.status_code == 429:
                 for attempt in range(MAX_429_RETRIES):
                     backoff = BASE_BACKOFF * (2**attempt)
@@ -136,6 +165,16 @@ class RPCManager:
             )
             await self.rate_limiter.acquire()
             return await self._http_post(retry_url, method, params)
+        except RuntimeError as e:
+            if self._is_auth_error(e):
+                if not self._failover_active:
+                    self._failover_active = True
+                    logger.warning(
+                        "RPC auth failure on primary — failing over to fallback RPC"
+                    )
+                await self.rate_limiter.acquire()
+                return await self._http_post(self.fallback_url, method, params)
+            raise
         except (httpx.ConnectError, httpx.TimeoutException):
             self._consecutive_failures += 1
             if self._consecutive_failures >= 3:

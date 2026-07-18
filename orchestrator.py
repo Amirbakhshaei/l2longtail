@@ -71,7 +71,7 @@ async def main() -> None:
     duration = int(os.getenv("SCAN_DURATION", "300"))
     lookback = int(os.getenv("SYNC_LOOKBACK_BLOCKS", "50"))
 
-    ankr_key = os.getenv("ANKR_API_KEY", "")
+    ankr_key = (os.getenv("ANKR_API_KEY", "") or "").strip()
     primary_url = (
         f"https://rpc.ankr.com/arbitrum/{ankr_key}"
         if ankr_key
