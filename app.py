@@ -22,6 +22,47 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+import websockets  # noqa: E402 - runtime WSS self-check only
+from websockets.exceptions import WebSocketException  # noqa: E402
+
+
+async def _check_wss_ingestion(url: str, timeout: float = 5.0) -> tuple[bool, str]:
+    """Boot-time validation of a single WSS ingestion endpoint.
+
+    Connects and attempts ``eth_subscribe(newHeads)``. Returns
+    ``(True, sub_id)`` if the provider serves subscriptions, or
+    ``(False, <reason>)`` on connection rejection / unsupported
+    subscription / timeout. This lets the Space report plainly whether
+    the configured Alchemy (or other) Arbitrum WS key actually works,
+    instead of discovering a 429 mid-run.
+    """
+    try:
+        async with websockets.connect(
+            url, ping_interval=5.0, ping_timeout=5.0
+        ) as ws:
+            await ws.send(
+                __import__("json").dumps(
+                    {
+                        "jsonrpc": "2.0",
+                        "id": 1,
+                        "method": "eth_subscribe",
+                        "params": [{"subscription": "newHeads"}],
+                    }
+                )
+            )
+            try:
+                raw = await asyncio.wait_for(ws.recv(), timeout=timeout)
+            except asyncio.TimeoutError:
+                return False, "no subscribe ack (timeout)"
+            msg = __import__("json").loads(raw)
+            if "error" in msg:
+                return False, f"subscription rejected: {msg['error']}"
+            return True, str(msg.get("result", ""))[:20]
+    except WebSocketException as e:  # noqa: BLE001
+        return False, f"connection rejected: {type(e).__name__} {e}"
+    except OSError as e:
+        return False, f"connection error: {e}"
+
 # Ensure the repo root (where the ``db``/``infra``/``config`` packages
 # live) is importable no matter what CWD the HF Space launcher uses.
 _REPO_ROOT = Path(__file__).resolve().parent
@@ -183,6 +224,31 @@ async def _run_engine() -> None:
         and str(single_wss).startswith(("ws://", "wss://"))
     )
     if use_wss:
+        # Boot-time self-check: validate the ingestion WSS actually serves
+        # eth_subscribe so a bad/rate-limited Alchemy key is caught at
+        # startup, not via a 429 mid-run.
+        ok, detail = await _check_wss_ingestion(single_wss)
+        if not ok:
+            # Fall back to WSS_RPC_URL (still single-provider, no rotation)
+            # if it was a separate, working endpoint.
+            fallback = os.getenv("WSS_RPC_URL", "").strip()
+            if fallback and fallback != single_wss:
+                ok2, detail2 = await _check_wss_ingestion(fallback)
+                if ok2:
+                    single_wss = fallback
+                    ok, detail = True, detail2
+        if ok:
+            logger.info(
+                "[STARTUP] WSS INGESTION OK (%s) sub=%s",
+                single_wss[:48], detail,
+            )
+        else:
+            logger.error(
+                "[STARTUP] WSS INGESTION FAILED (%s): %s — "
+                "ingestion will not stream until a valid subscription-capable "
+                "Arbitrum WSS key is set in ALCHEMY_WSS_URL",
+                single_wss[:48], detail,
+            )
         sync_source = WebSocketListener(
             single_wss, flea.whitelisted_addresses, v3_addresses=flea.v3_addresses
         )
