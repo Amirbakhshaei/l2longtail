@@ -15,3 +15,9 @@ venv/
 .coverage
 htmlcov/
 keystore.json
+
+# Runtime artifacts (HF Space persistent volume / local runs)
+engine.log
+cleared_tokens.db
+longtail.db
+logs/telemetry.jsonl
