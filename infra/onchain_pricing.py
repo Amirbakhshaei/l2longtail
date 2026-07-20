@@ -10,8 +10,12 @@ executes a ``quoteExactInput`` over the canonical V3 path off-chain (no state
 change) and returns the exact ``amountOut`` for a given ``amountIn``.
 
 To size the trade without a Ternary Search, we evaluate a full grid of input
-sizes simultaneously in a single ``Multicall3.aggregate3`` call and map each
-``amountIn`` to its ``amountOut`` (reverts registered as ``0``).
+sizes simultaneously in a single ``Multicall3.aggregate3`` call (using
+``allowFailure = true``) and map each ``amountIn`` to its ``amountOut``.
+EVM reverts — honeypots, max-tx tax tokens, dynamically-fee'd or
+otherwise malicious contracts — surface per-call as ``(success=False, b'')``
+and are registered as ``0`` without aborting the batch or crashing the
+Python ABI decoder.
 
 Path encoding
 -------------
@@ -123,18 +127,24 @@ def decode_aggregate3(raw_hex: str) -> list[tuple[bool, bytes]]:
 def decode_quote_output(raw_bytes: bytes) -> int:
     """Extract ``amountOut`` (first uint256) from ``quoteExactInput`` return.
 
-    quoteExactInput returns::
+    quoteExactInput returns a struct::
 
         (uint256 amountOut, uint160 sqrtPriceX96After,
          uint32 initializedTicksCrossed, uint256 gasEstimate)
+
+    ``amountOut`` is the leading 32-byte big-endian word of the return
+    payload, so we read it directly rather than round-tripping eth_abi's
+    pointer-sensitive tuple decoder. This is ABI-exact for the static
+    first word and immune to decode quirks. A malformed/short payload
+    (honeypot, tax-token, malformed return) degrades to ``0`` instead
+    of crashing the decoding thread.
     """
     if not raw_bytes or len(raw_bytes) < 32:
         return 0
-    amount_out, *_ = abi_decode(
-        ["uint256", "uint160", "uint32", "uint256"],
-        raw_bytes,
-    )
-    return int(amount_out)
+    try:
+        return int.from_bytes(raw_bytes[0:32], "big")
+    except Exception:  # noqa: BLE001 - malformed payload -> 0
+        return 0
 
 
 class OnChainQuoter:
@@ -193,12 +203,19 @@ class OnChainQuoter:
             return {size: 0 for size in grid_sizes_wei}
 
         # Pair each decoded result back to its grid size (order preserved).
+        # Safe Decoding Gate: validated per the directive — a reverted quote
+        # (honeypot / max-tx tax / dynamic-fee trap) surfaces as either
+        # `success=False` or empty `return_data`. Both are registered as 0
+        # and never reach the QuoterV2 ABI decoder, so a malformed payload
+        # can never crash the Python decoding thread.
         out: dict[int, int] = {}
         for (success, ret), amount_in in zip(decoded, grid_sizes_wei):
-            if not success:
+            if not success or ret is None or ret == b"":
+                # EVM reverted (honeypot, max-tx limit, or tax-token failure)
                 out[amount_in] = 0
                 continue
             try:
+                # Execute the existing QuoterV2 ABI decoding logic ONLY here.
                 out[amount_in] = decode_quote_output(ret)
             except Exception:  # noqa: BLE001 - unparseable return -> treat as 0
                 out[amount_in] = 0

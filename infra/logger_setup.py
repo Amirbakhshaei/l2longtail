@@ -54,9 +54,16 @@ def configure_telemetry_logger(level: str = "INFO") -> None:
         format="{message}",
         serialize=True,
         rotation="100 MB",
-        enqueue=True,  # async write; never blocks the hot path
+        enqueue=False,  # synchronous write; ensures /data/logs/telemetry.jsonl
+                       # is live and durable (HF Spaces drops the async queue on stop)
     )
 
 
 # Configure on import so any module importing this logger is ready.
 configure_telemetry_logger()
+
+# Emit a startup ping so the JSONL sink file is created (and non-empty)
+# immediately at boot, proving the resolved path is live.
+loguru_logger.bind(event="startup", telemetry_path=str(_TELEMETRY_PATH)).info(
+    "telemetry online"
+)

@@ -71,6 +71,11 @@ BASE_BACKOFF = 1.0
 MAX_BACKOFF = 30.0
 RECONNECT_JITTER = 0.25
 
+# Watchdog: Arbitrum block time is ~0.25s. If we receive ZERO frames
+# (newHeads OR logs) within this window, the provider has silently dropped
+# the socket and we must rotate to the next URL in the pool instantly.
+SILENT_DROP_TIMEOUT = 2.0
+
 
 @dataclass
 class SyncSubscription:
@@ -82,24 +87,37 @@ class SyncSubscription:
 
 class WebSocketListener:
     """
-    Low-latency WSS consumer for Sync events on a whitelist of pools.
+    Low-latency WSS consumer with a WSS Watchdog and Instant Rotation.
+
+    Accepts a pool of free-tier WSS URLs and rotates through them
+    sequentially. A ``newHeads`` subscription acts as the liveness
+    heartbeat; the ``logs`` subscription carries V2 ``Sync`` + V3 ``Swap``
+    events. Every socket read is wrapped in ``asyncio.wait_for(..., 2.0)`` —
+    if the provider goes silent (free-tier idle-drop) the watchdog force-closes
+    the socket, advances the URL index, and reconnects to the next provider.
 
     Usage::
 
-        listener = WebSocketListener(wss_url, whitelisted_addresses)
+        listener = WebSocketListener([wss_url_a, wss_url_b], whitelisted_addresses)
         listener.on_sync(handle_sync)
         await listener.listen()
     """
 
     def __init__(
         self,
-        wss_url: str,
+        wss_urls: str | list[str],
         whitelisted_addresses: list[str],
         sync_topic: str = V2_SYNC_TOPIC,
         v3_addresses: list[str] | None = None,
         max_backoff: float = MAX_BACKOFF,
     ) -> None:
-        self.wss_url = wss_url
+        if isinstance(wss_urls, str):
+            wss_urls = [wss_urls]
+        self.wss_pool = [u for u in wss_urls if u]
+        if not self.wss_pool:
+            raise ValueError("WebSocketListener requires at least one WSS URL")
+        self._url_index = 0
+
         self.whitelist = [a.lower() for a in whitelisted_addresses]
         self.whitelist_set = set(self.whitelist)
         self.sync_topic = sync_topic
@@ -113,9 +131,21 @@ class WebSocketListener:
         self._ws: ClientConnection | None = None
         self._sub: SyncSubscription | None = None
         self._v3_sub: SyncSubscription | None = None
+        self._head_sub: SyncSubscription | None = None
         self._req_counter = 0
         self._seen: set[str] = set()
         self._events_processed = 0
+        self._last_head_ts: float = 0.0
+
+    @property
+    def wss_url(self) -> str:
+        """The URL the watchdog will connect to next (round-robin)."""
+        return self.wss_pool[self._url_index % len(self.wss_pool)]
+
+    def _rotate_url(self) -> str:
+        """Advance to the next provider in the pool and return it."""
+        self._url_index = (self._url_index + 1) % len(self.wss_pool)
+        return self.wss_url
 
     def on_sync(self, callback: Callable[[SyncEvent], Awaitable[None]]) -> None:
         self._callbacks.append(callback)
@@ -127,7 +157,7 @@ class WebSocketListener:
     # Connection lifecycle
     # ------------------------------------------------------------------ #
     async def listen(self) -> None:
-        """Block forever, maintaining the WSS subscription with backoff."""
+        """Block forever, maintaining WSS with watchdog + instant rotation."""
         self._running = True
         attempt = 0
         while self._running:
@@ -139,51 +169,75 @@ class WebSocketListener:
                     break
                 attempt += 1
                 backoff = min(BASE_BACKOFF * (2 ** (attempt - 1)), self.max_backoff)
+                next_url = self._rotate_url()
                 logger.warning(
-                    "WSS dropped (%s) — reconnecting in %.1fs (attempt %d)",
+                    "WSS dropped (%s) on %s — rotating to %s, reconnect in %.1fs "
+                    "(attempt %d)",
                     e,
+                    self.wss_url,
+                    next_url,
                     backoff,
                     attempt,
                 )
                 await asyncio.sleep(backoff)
 
     async def _connect_and_stream(self) -> None:
-        async with websockets.connect(self.wss_url, ping_interval=15, ping_timeout=10) as ws:
+        url = self.wss_url
+        # Strict protocol-level heartbeat: the library sends a ping every 5s and
+        # expects a pong within 5s; a missed pong raises ConnectionClosed, which
+        # listen() catches to instantly rotate to the next provider in the pool.
+        async with websockets.connect(url, ping_interval=5.0, ping_timeout=5.0) as ws:
             self._ws = ws
-            logger.info("WSS connected: %s", self.wss_url)
+            self._head_sub = None
+            self._sub = None
+            self._v3_sub = None
+            logger.info("WSS connected: %s", url)
 
-            sub = await self._subscribe()
+            # newHeads acts as the liveness heartbeat for the watchdog.
+            head_sub = await self._subscribe_new_heads()
+            if head_sub is None:
+                # Raise so listen() catches it and rotates to the next URL
+                # in the pool (e.g. provider rejects eth_subscribe).
+                raise OSError("newHeads subscription rejected")
+            self._head_sub = head_sub
+
+            # Single logs subscription carrying both V2 Sync and V3 Swap topics
+            # across the full whitelist — one eth_subscribe covers everything.
+            sub = await self._subscribe_logs()
             if sub is None:
-                logger.error("Subscription handshake failed; terminating stream")
-                return
-
+                raise OSError("logs subscription rejected")
             self._sub = sub
+            if self.v3_addresses and self._v3_callbacks:
+                self._v3_sub = sub  # same sub_id delivers both topics
             logger.info(
-                "Subscribed to Sync logs on %d whitelisted pools (sub=%s)",
+                "Subscribed: heads=%s logs(V2=%d V3=%d) on %s",
+                head_sub.sub_id[:18],
                 len(self.whitelist),
-                sub.sub_id[:18],
+                len(self.v3_addresses),
+                url,
             )
 
-            if self.v3_addresses and self._v3_callbacks:
-                v3_sub = await self._subscribe_v3()
-                if v3_sub is None:
+            self._last_head_ts = time.monotonic()
+            # Silent-Drop Defense: wrap every read in a 2s watchdog. Arbitrum
+            # emits a block ~every 0.25s, so 2s of silence means we were
+            # dropped. Raise TimeoutError -> caught by listen() -> rotate URL.
+            while self._running:
+                try:
+                    raw = await asyncio.wait_for(
+                        ws.recv(), timeout=SILENT_DROP_TIMEOUT
+                    )
+                except asyncio.TimeoutError:
                     logger.warning(
-                        "V3 subscription handshake failed; V3 pools ignored"
+                        "WSS silent for %.1fs on %s — provider dropped, rotating",
+                        SILENT_DROP_TIMEOUT,
+                        url,
                     )
-                else:
-                    self._v3_sub = v3_sub
-                    logger.info(
-                        "Subscribed to V3 Swap logs on %d pools (sub=%s)",
-                        len(self.v3_addresses),
-                        v3_sub.sub_id[:18],
-                    )
-
-            async for raw in ws:
-                if not self._running:
-                    break
+                    raise
+                if isinstance(raw, bytes):
+                    raw = raw.decode("utf-8")
                 await self._dispatch(raw)
 
-    async def _subscribe(self) -> SyncSubscription | None:
+    async def _subscribe_new_heads(self) -> SyncSubscription | None:
         assert self._ws is not None
         self._req_counter += 1
         req_id = self._req_counter
@@ -191,30 +245,37 @@ class WebSocketListener:
             "jsonrpc": "2.0",
             "id": req_id,
             "method": SUBSCRIBE_METHOD,
-            "params": [
-                {
-                    "subscription": "logs",
-                    "logs": {
-                        "address": self.whitelist,
-                        "topics": [self.sync_topic],
-                    },
-                }
-            ],
+            "params": [{"subscription": "newHeads"}],
         }
         await self._ws.send(json.dumps(payload))
         resp = await self._recv_json()
         if resp is None:
             return None
+        if "error" in resp:
+            logger.error(
+                "eth_subscribe(newHeads) rejected by %s: %s",
+                self.wss_url,
+                resp["error"],
+            )
+            return None
         result = resp.get("result")
         if not result:
-            logger.error("eth_subscribe returned no id: %s", resp)
+            logger.error("eth_subscribe(newHeads) returned no id: %s", resp)
             return None
         return SyncSubscription(sub_id=result, req_id=req_id)
 
-    async def _subscribe_v3(self) -> SyncSubscription | None:
+    async def _subscribe_logs(self) -> SyncSubscription | None:
         assert self._ws is not None
         self._req_counter += 1
         req_id = self._req_counter
+        topics: list[str] = [self.sync_topic]
+        if self.v3_addresses and self._v3_callbacks:
+            topics.append(V3_SWAP_TOPIC)
+        # Union of all addresses we care about; the topics array filters by
+        # either V2 Sync OR V3 Swap, so a single subscription suffices.
+        addresses = list(self.whitelist)
+        if self.v3_addresses and self._v3_callbacks:
+            addresses = addresses + self.v3_addresses
         payload = {
             "jsonrpc": "2.0",
             "id": req_id,
@@ -223,8 +284,8 @@ class WebSocketListener:
                 {
                     "subscription": "logs",
                     "logs": {
-                        "address": self.v3_addresses,
-                        "topics": [V3_SWAP_TOPIC],
+                        "address": addresses,
+                        "topics": topics,
                     },
                 }
             ],
@@ -233,9 +294,16 @@ class WebSocketListener:
         resp = await self._recv_json()
         if resp is None:
             return None
+        if "error" in resp:
+            logger.error(
+                "eth_subscribe(logs) rejected by %s: %s",
+                self.wss_url,
+                resp["error"],
+            )
+            return None
         result = resp.get("result")
         if not result:
-            logger.error("eth_subscribe (V3) returned no id: %s", resp)
+            logger.error("eth_subscribe(logs) returned no id: %s", resp)
             return None
         return SyncSubscription(sub_id=result, req_id=req_id)
 
@@ -267,29 +335,41 @@ class WebSocketListener:
 
         params = msg.get("params", {})
         sub_id = params.get("subscription")
+
+        # newHeads heartbeat — refreshes the watchdog liveness timestamp.
+        if sub_id == (self._head_sub.sub_id if self._head_sub else None):
+            self._last_head_ts = time.monotonic()
+            return
+
+        # logs subscription: delivers both V2 Sync (whitelist) and V3 Swap
+        # (v3_set) under a single sub_id.
         if sub_id == (self._sub.sub_id if self._sub else None):
             log = params.get("result", {})
-            event = self._parse_sync_log(log)
-            if event is None:
+            address = (log.get("address") or "").lower()
+
+            # V2 Sync path.
+            if address in self.whitelist_set:
+                event = self._parse_sync_log(log)
+                if event is None:
+                    return
+                self._events_processed += 1
+                for callback in self._callbacks:
+                    try:
+                        await callback(event)
+                    except Exception as e:  # noqa: BLE001 - never kill stream
+                        logger.error("Sync callback failed: %s", e)
                 return
 
-            self._events_processed += 1
-            for callback in self._callbacks:
-                try:
-                    await callback(event)
-                except Exception as e:  # noqa: BLE001 - never kill the stream
-                    logger.error("Sync callback failed: %s", e)
-        elif sub_id == (self._v3_sub.sub_id if self._v3_sub else None):
-            log = params.get("result", {})
-            if parse_v3_log(log, self.v3_set) is None:
-                return
-
-            self._events_processed += 1
-            for callback in self._v3_callbacks:
-                try:
-                    await callback(log)
-                except Exception as e:  # noqa: BLE001 - never kill the stream
-                    logger.error("V3 Swap callback failed: %s", e)
+            # V3 Swap path (same subscription).
+            if self.v3_addresses and self._v3_callbacks and address in self.v3_set:
+                if parse_v3_log(log, self.v3_set) is None:
+                    return
+                self._events_processed += 1
+                for callback in self._v3_callbacks:
+                    try:
+                        await callback(log)
+                    except Exception as e:  # noqa: BLE001 - never kill stream
+                        logger.error("V3 Swap callback failed: %s", e)
 
     def _parse_sync_log(self, log: dict) -> SyncEvent | None:
         return parse_sync_log(log, self.whitelist_set, self._seen)

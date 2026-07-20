@@ -46,37 +46,33 @@ GECKO_NETWORK_POOLS = f"{GECKO_URL}/networks/arbitrum/pools"
 DEXSCREENER_TOKEN_PAIRS = "https://api.dexscreener.com/token-pairs/v1/arbitrum/{token}"
 
 TARGET_POOLS = int(os.getenv("TARGET_POOLS", "500"))
-PAGES = int(os.getenv("SEED_PAGES", "25"))          # 25 pages * 20 = 500 pools
+# 30 pages * 20 = 600 candidate pools. We then keep the top TARGET_POOLS by
+# 24h volume, comfortably reaching the 400-500 long-tail topology.
+PAGES = int(os.getenv("SEED_PAGES", "30"))
 PAGE_SLEEP = 2.0                                     # stay under 30 req/min (~12/min)
 POOLS_PER_PAGE = 20
 
-# Liquidity floor — never ingest untradeable dust that bleeds to slippage
-# under flashloan-sized notional. A $5k equivalent minimum filters the
-# worst offenders while still permitting deep expansion of the core topology.
-MIN_LIQUIDITY_USD = 5_000.0
+# Liquidity floor lowered to $1,500: the previous $5k gate was too strict
+# and starved the long-tail surface area. $1.5k still filters untradeable
+# dust that would bleed to slippage under flashloan-sized notional, while
+# permitting the engine to ingest low-cap meme / long-tail pairs that route
+# through a reliable asset.
+MIN_LIQUIDITY_USD = 1_500.0
 # Volume gate kept deliberately low: it only screens out truly dead pools.
 # The liquidity floor is the real slippage guard per the directives.
 MIN_VOLUME_24H_USD = 1_000.0
 
-# Core trading assets. We expand surface area *within* the high-liquidity
-# perimeter of these blue-chip legs — not by chasing unverified long-tail
-# tokens that inflate pool counts with untradeable dust. The original five
-# (WETH/USDC/USDT/ARB/WBTC) are the anchor legs; a further set of major
-# Arbitrum blue-chips is included so the verified topology can be widened
-# toward the target while every pool stays liquid and core-aligned.
-CORE_TOKENS = {
+# Relaxed asset gate (Change 2): the strict CORE_TOKENS whitelist is
+# removed. Instead we require that *at least one* leg of every ingested pool
+# is a reliable routing asset — WETH, USDC, USDT, or ARB. The other leg may
+# be any long-tail / meme token (provided it clears the liquidity floor), so
+# the topology expands into the long tail without ever routing through a
+# fully illiquid pair.
+ROUTING_ASSETS = {
     "0x82af49447d8a07e3bd95bd0d56f35241523fbab1",  # WETH
     "0xaf88d065e77c8cc2239327c5edb3a432268e5831",  # USDC
     "0xfd086bc7cd5c481dcc9c85ebe478a1c0b69fcbb9",  # USDT
     "0x912ce59144191c1204e64559fe8253a0e49e6548",  # ARB
-    "0x2f2a2543b76a4166549f7aab2e75bef0aefc5b0f",  # WBTC
-    "0xda10009cbd5d07dd0cecc66161fc93d7c9000da1",  # DAI
-    "0xf97f4df75117a78c1a5a0dbb814af92458539fb4",  # GMX
-    "0xfa7f8980b0f1e64a2062791cc3b0871572f1f7f0",  # GRAIL
-    "0xba5ddd1f9d7f570dc94a51479a000e3bce967196",  # MAGIC
-    "0x6e2a43be0cb87c47c3f0622f736b5b196fef58a",  # AAVE
-    "0xfc5a1a6eb076a2c7ad06ed22c90d7e710e35ad0a",  # LINK
-    "0xff970a61a04b1ca14834a43f5de4533ebddb5cc8",  # USDC.e
 }
 # V2 *and* V3 venues are ingested. The engine now quotes V3 routes flawlessly
 # on-chain via QuoterV2 + Multicall3, so concentrated-liquidity pools are
@@ -184,11 +180,13 @@ def _valid_pair(p: dict) -> bool:
         return False
     if len(pair) != 42 or not pair.startswith("0x"):
         return False
-    # Core-only perimeter: at least one leg must be a blue-chip asset so we
-    # never expand into unverified low-liquidity long-tail tokens.
+    # Relaxed long-tail gate: at least one leg must be a reliable routing
+    # asset (WETH/USDC/USDT/ARB). The other leg may be any long-tail or
+    # meme token, provided it clears the liquidity floor. This widens the
+    # topology toward 400-500 pools without ever routing a fully illiquid pair.
     base_l = (base or "").lower()
     quote_l = (quote or "").lower()
-    if not (base_l in CORE_TOKENS or quote_l in CORE_TOKENS):
+    if not (base_l in ROUTING_ASSETS or quote_l in ROUTING_ASSETS):
         return False
     return True
 
@@ -303,13 +301,15 @@ async def _fetch_gecko_pools(client: httpx.AsyncClient) -> list[dict]:
 # DexScreener — per-core-token pairs (primary + backfill toward TARGET_POOLS)
 # --------------------------------------------------------------------------
 async def _fetch_dexscreener_core(client: httpx.AsyncClient) -> list[dict]:
-    """Pull every DexScreener pair that touches one of our CORE_TOKENS on
+    """Pull every DexScreener pair that touches one of our ROUTING_ASSETS on
     Arbitrum. This is the authoritative source and the backfill when
     GeckoTerminal 429s before reaching TARGET_POOLS. Rate-limit friendly:
-    one request per core token (5 total), retried on 429 with a short sleep.
+    one request per routing asset (4 total), retried on 429 with a short sleep.
+    Pairs returned may have a long-tail/meme other leg (allowed under the
+    relaxed asset gate) — _valid_pair enforces the single-routing-leg rule.
     """
     out: list[dict] = []
-    for token in sorted(CORE_TOKENS):
+    for token in sorted(ROUTING_ASSETS):
         url = DEXSCREENER_TOKEN_PAIRS.format(token=token)
         for attempt in range(3):
             try:
@@ -392,7 +392,7 @@ async def main() -> None:
     # Hard floor: only if the live crawl found nothing (rate-limited / down),
     # fall back to the curated core set so the engine always has a topology.
     if not final:
-        logger.warning("No live core pools available — using static core fallback set")
+        logger.warning("No live pools available — using static fallback set")
         final = STATIC_FALLBACK[:TARGET_POOLS]
 
     WHITELIST_PATH.parent.mkdir(parents=True, exist_ok=True)
@@ -401,7 +401,7 @@ async def main() -> None:
     n_v3 = sum(1 for p in final if "fee_tier" in p)
     n_v2 = len(final) - n_v3
     logger.info(
-        "Wrote %d core pools to %s (live=%d, discovered=%d, V3=%d, V2=%d)",
+        "Wrote %d long-tail pools to %s (live=%d, discovered=%d, V3=%d, V2=%d)",
         len(final),
         WHITELIST_PATH,
         len(live),

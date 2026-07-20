@@ -134,6 +134,13 @@ async def _run_engine() -> None:
         .split("/")[0]
         + "/ws"
     )
+    # WSS provider pool for the Instant-Rotation Watchdog. Comma-separated
+    # WSS_URLS (Space Secret) enables failover across free-tier providers; if
+    # unset we run a single-URL pool on the derived wss_url.
+    raw_pool = os.getenv("WSS_URLS", "")
+    wss_pool = [u.strip() for u in raw_pool.split(",") if u.strip()]
+    if not wss_pool:
+        wss_pool = [wss_url]
     vault_address = os.getenv(
         "BALANCER_VAULT_ADDRESS", "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
     )
@@ -179,7 +186,7 @@ async def _run_engine() -> None:
     )
     if use_wss:
         sync_source = WebSocketListener(
-            wss_url, flea.whitelisted_addresses, v3_addresses=flea.v3_addresses
+            wss_pool, flea.whitelisted_addresses, v3_addresses=flea.v3_addresses
         )
         sync_transport = "wss"
     else:
