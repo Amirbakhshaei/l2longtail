@@ -105,25 +105,28 @@ class WebSocketListener:
 
     def __init__(
         self,
-        wss_urls: str | list[str],
+        wss_url: str,
         whitelisted_addresses: list[str],
         sync_topic: str = V2_SYNC_TOPIC,
         v3_addresses: list[str] | None = None,
-        max_backoff: float = MAX_BACKOFF,
+        base_delay: float = 1.0,
+        max_delay: float = 30.0,
     ) -> None:
-        if isinstance(wss_urls, str):
-            wss_urls = [wss_urls]
-        self.wss_pool = [u for u in wss_urls if u]
-        if not self.wss_pool:
-            raise ValueError("WebSocketListener requires at least one WSS URL")
-        self._url_index = 0
+        # Single-provider ingestion: no URL rotation. Execution shotgun RPCs
+        # (rpc_manager) are unchanged — this restriction applies ONLY to the
+        # WSS listener. A dropped connection uses exponential backoff (below)
+        # so we never trip Alchemy's 429 DDoS protection.
+        if not wss_url:
+            raise ValueError("WebSocketListener requires a single WSS URL")
+        self.wss_url = wss_url
+        self.base_delay = base_delay
+        self.max_delay = max_delay
 
         self.whitelist = [a.lower() for a in whitelisted_addresses]
         self.whitelist_set = set(self.whitelist)
         self.sync_topic = sync_topic
         self.v3_addresses = [a.lower() for a in (v3_addresses or [])]
         self.v3_set = set(self.v3_addresses)
-        self.max_backoff = max_backoff
 
         self._running = False
         self._callbacks: list[Callable[[SyncEvent], Awaitable[None]]] = []
@@ -137,16 +140,6 @@ class WebSocketListener:
         self._events_processed = 0
         self._last_head_ts: float = 0.0
 
-    @property
-    def wss_url(self) -> str:
-        """The URL the watchdog will connect to next (round-robin)."""
-        return self.wss_pool[self._url_index % len(self.wss_pool)]
-
-    def _rotate_url(self) -> str:
-        """Advance to the next provider in the pool and return it."""
-        self._url_index = (self._url_index + 1) % len(self.wss_pool)
-        return self.wss_url
-
     def on_sync(self, callback: Callable[[SyncEvent], Awaitable[None]]) -> None:
         self._callbacks.append(callback)
 
@@ -157,7 +150,12 @@ class WebSocketListener:
     # Connection lifecycle
     # ------------------------------------------------------------------ #
     async def listen(self) -> None:
-        """Block forever, maintaining WSS with watchdog + instant rotation."""
+        """Block forever, maintaining a single WSS with a watchdog.
+
+        On any drop/exception (ConnectionClosed, HTTP 429, silent timeout)
+        we wait with exponential backoff before reconnecting so a flapping
+        socket can never hammer the provider into a 429 DDoS block.
+        """
         self._running = True
         attempt = 0
         while self._running:
@@ -168,18 +166,15 @@ class WebSocketListener:
                 if not self._running:
                     break
                 attempt += 1
-                backoff = min(BASE_BACKOFF * (2 ** (attempt - 1)), self.max_backoff)
-                next_url = self._rotate_url()
+                delay = min(self.base_delay * (2 ** (attempt - 1)), self.max_delay)
                 logger.warning(
-                    "WSS dropped (%s) on %s — rotating to %s, reconnect in %.1fs "
-                    "(attempt %d)",
+                    "WSS dropped (%s) on %s — reconnecting in %.1fs (attempt %d)",
                     e,
                     self.wss_url,
-                    next_url,
-                    backoff,
+                    delay,
                     attempt,
                 )
-                await asyncio.sleep(backoff)
+                await asyncio.sleep(delay)
 
     async def _connect_and_stream(self) -> None:
         url = self.wss_url

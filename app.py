@@ -134,13 +134,13 @@ async def _run_engine() -> None:
         .split("/")[0]
         + "/ws"
     )
-    # WSS provider pool for the Instant-Rotation Watchdog. Comma-separated
-    # WSS_URLS (Space Secret) enables failover across free-tier providers; if
-    # unset we run a single-URL pool on the derived wss_url.
-    raw_pool = os.getenv("WSS_URLS", "")
-    wss_pool = [u.strip() for u in raw_pool.split(",") if u.strip()]
-    if not wss_pool:
-        wss_pool = [wss_url]
+    # Single-provider WSS ingestion: the listener connects strictly to
+    # ALCHEMY_WSS_URL (a subscription-capable Arbitrum WS endpoint).
+    # Execution shotgun RPCs are a SEPARATE concern (rpc_manager) and are
+    # intentionally NOT rotated here. If ALCHEMY_WSS_URL is unset we
+    # fall back to WSS_RPC_URL, then the derived wss_url.
+    alchemy_wss = os.getenv("ALCHEMY_WSS_URL", "").strip()
+    single_wss = alchemy_wss or os.getenv("WSS_RPC_URL", "").strip() or wss_url
     vault_address = os.getenv(
         "BALANCER_VAULT_ADDRESS", "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
     )
@@ -174,19 +174,17 @@ async def _run_engine() -> None:
 
     sync_queue: asyncio.Queue = asyncio.Queue()
 
-    # Choose sync transport: WSS when a real WebSocket endpoint is explicitly
-    # configured (WSS_RPC_URL env), otherwise HTTP eth_getLogs polling (e.g. a
-    # free Ankr HTTPS RPC that has no WebSocket support). The internal
-    # sequencer-feed default is NOT a usable eth_subscribe endpoint, so it must
-    # not force WSS mode.
+    # Choose sync transport: WSS when a single subscription-capable
+    # WebSocket endpoint is explicitly configured (ALCHEMY_WSS_URL, or
+    # WSS_RPC_URL fallback), otherwise HTTP eth_getLogs polling.
     use_wss = bool(
-        os.getenv("WSS_RPC_URL")
+        single_wss
         and settings.sync_transport in ("auto", "wss")
-        and str(os.getenv("WSS_RPC_URL")).startswith(("ws://", "wss://"))
+        and str(single_wss).startswith(("ws://", "wss://"))
     )
     if use_wss:
         sync_source = WebSocketListener(
-            wss_pool, flea.whitelisted_addresses, v3_addresses=flea.v3_addresses
+            single_wss, flea.whitelisted_addresses, v3_addresses=flea.v3_addresses
         )
         sync_transport = "wss"
     else:

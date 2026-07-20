@@ -88,12 +88,10 @@ async def main() -> None:
         .split("/")[0]
         + "/ws"
     )
-    # WSS provider pool for the Instant-Rotation Watchdog. Comma-separated
-    # WSS_URLS enables failover; if empty, fall back to the single wss_url.
-    raw_pool = os.getenv("WSS_URLS", "")
-    wss_pool = [u.strip() for u in raw_pool.split(",") if u.strip()]
-    if not wss_pool:
-        wss_pool = [wss_url]
+    # Single-provider WSS ingestion: connect strictly to ALCHEMY_WSS_URL.
+    # Execution shotgun RPCs (rpc_manager) are a separate concern.
+    alchemy_wss = os.getenv("ALCHEMY_WSS_URL", "").strip()
+    single_wss = alchemy_wss or os.getenv("WSS_RPC_URL", "").strip() or wss_url
     vault_address = os.getenv(
         "BALANCER_VAULT_ADDRESS", "0xBA12222222228d8Ba445958a75a0704d566BF2C8"
     )
@@ -120,13 +118,13 @@ async def main() -> None:
     sync_queue: asyncio.Queue = asyncio.Queue()
 
     use_wss = bool(
-        os.getenv("WSS_RPC_URL")
+        single_wss
         and settings.sync_transport in ("auto", "wss")
-        and str(os.getenv("WSS_RPC_URL")).startswith(("ws://", "wss://"))
+        and str(single_wss).startswith(("ws://", "wss://"))
     )
     if use_wss:
         sync_source = WebSocketListener(
-            wss_pool, flea.whitelisted_addresses, v3_addresses=flea.v3_addresses
+            single_wss, flea.whitelisted_addresses, v3_addresses=flea.v3_addresses
         )
         sync_transport = "wss"
     else:
