@@ -240,17 +240,25 @@ class WebSocketListener:
             "jsonrpc": "2.0",
             "id": req_id,
             "method": SUBSCRIBE_METHOD,
-            "params": [{"subscription": "newHeads"}],
+            "params": ["newHeads"],
         }
         await self._ws.send(json.dumps(payload))
         resp = await self._recv_json()
         if resp is None:
             return None
         if "error" in resp:
+            err = resp["error"]
+            # QuickNode Streams gateway (/ws suffix) rejects standard
+            # eth_subscribe with code -32608 / status 500. The core WSS
+            # endpoint (bare token + trailing slash) serves eth_subscribe.
+            hint = ""
+            if isinstance(err, dict) and err.get("code") == -32608:
+                hint = " (QuickNode: drop the /ws suffix, use bare token + '/')"
             logger.error(
-                "eth_subscribe(newHeads) rejected by %s: %s",
+                "eth_subscribe(newHeads) rejected by %s: %s%s",
                 self.wss_url,
-                resp["error"],
+                err,
+                hint,
             )
             return None
         result = resp.get("result")
@@ -276,13 +284,11 @@ class WebSocketListener:
             "id": req_id,
             "method": SUBSCRIBE_METHOD,
             "params": [
+                "logs",
                 {
-                    "subscription": "logs",
-                    "logs": {
-                        "address": addresses,
-                        "topics": topics,
-                    },
-                }
+                    "address": addresses,
+                    "topics": topics,
+                },
             ],
         }
         await self._ws.send(json.dumps(payload))
@@ -290,10 +296,15 @@ class WebSocketListener:
         if resp is None:
             return None
         if "error" in resp:
+            err = resp["error"]
+            hint = ""
+            if isinstance(err, dict) and err.get("code") == -32608:
+                hint = " (QuickNode: drop the /ws suffix, use bare token + '/')"
             logger.error(
-                "eth_subscribe(logs) rejected by %s: %s",
+                "eth_subscribe(logs) rejected by %s: %s%s",
                 self.wss_url,
-                resp["error"],
+                err,
+                hint,
             )
             return None
         result = resp.get("result")

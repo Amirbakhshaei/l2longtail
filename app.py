@@ -46,7 +46,7 @@ async def _check_wss_ingestion(url: str, timeout: float = 5.0) -> tuple[bool, st
                         "jsonrpc": "2.0",
                         "id": 1,
                         "method": "eth_subscribe",
-                        "params": [{"subscription": "newHeads"}],
+                        "params": ["newHeads"],
                     }
                 )
             )
