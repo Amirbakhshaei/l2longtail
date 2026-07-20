@@ -14,6 +14,7 @@ eth-utils>=4.0.0
 orjson>=3.10.0
 structlog>=24.4.0
 prometheus-client>=0.21.0
+loguru>=0.7.0
 
 # Solidity compiler for deploying the FlashloanExecutor (live mode only).
 # Required by scripts/deploy_executor.py. Not needed for PAPER/DRY_RUN.

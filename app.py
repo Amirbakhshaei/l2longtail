@@ -44,6 +44,15 @@ def _persistent_path(name: str) -> Path:
     return Path(name)
 
 
+# Configure the structured telemetry logger (logs/telemetry.jsonl by default).
+# On Spaces the persistent volume at /data survives rebuilds, so we point the
+# JSONL export there when available. Must run before process_b_sniper imports
+# it (it self-configures on import).
+if Path("/data").is_dir():
+    os.environ.setdefault("TELEMETRY_DIR", "/data/logs")
+import infra.logger_setup  # noqa: E402  (side-effect: installs jsonl sink)
+
+
 # Engine + UI logs are mirrored to a file (under /data on Spaces) so the
 # Gradio viewer can tail real activity instead of only stdout. A StreamHandler
 # to stdout is added *alongside* the file handler so the same records also

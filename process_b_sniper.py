@@ -27,6 +27,11 @@ from collections.abc import Awaitable, Callable
 from eth_abi import encode as abi_encode
 from eth_utils import keccak
 
+# Structured telemetry (JSONL) logger — see infra/logger_setup.py. Kept
+# separate from the stdlib `logger` below so the AI-readable export schema
+# stays clean and the native Rust extension can never corrupt it.
+from infra.logger_setup import loguru_logger as tel
+
 from config.constants import (
     DEX_ROUTERS,
     USDC_ADDRESS,
@@ -627,6 +632,10 @@ class GraphArbEngine:
         self.graph = self._build_graph()
         self._seen_cycles: set[tuple[str, ...]] = set()
         self._weth_price: float | None = None
+        # Trace-debugger sampler: count candidate cycles that return negative
+        # gross profit / revert so we can unblind the simulation layer without
+        # spamming I/O on every miss. Every 100th miss emits a [TRACE] block.
+        self._trace_counter = 0
 
     def _format_path(
         self, tokens: list[str], dexes: list[str], fee_tiers: list[int]
@@ -763,6 +772,29 @@ class GraphArbEngine:
         )
 
         if not has_positive_gross:
+            # Trace debugger (Python-only, per Lang Boundary Law): sample the
+            # raw Multicall3 grid output every 100th non-profitable candidate so
+            # we can unblind the simulation layer without flooding the console.
+            self._trace_counter += 1
+            if self._trace_counter % 100 == 0:
+                path_str = " -> ".join(t[:8] for t in cycle.tokens)
+                # [INPUTS]: the raw wei grid probe sizes fanned to Multicall3.
+                inputs_wei = [int(s) for s in self.quoter.grid]
+                # [OUTPUTS]: each probe's returned output wei; None for REVERT.
+                outputs_wei: list[int | None] = []
+                for size_wei in self.quoter.grid:
+                    val = grid_matrix.get(float(size_wei), "REVERT")
+                    outputs_wei.append(None if val == "REVERT" else int(val))
+                tel.bind(
+                    event="path_trace",
+                    sample=self._trace_counter,
+                    route=path_str,
+                    inputs_wei=inputs_wei,
+                    outputs_wei=outputs_wei,
+                    gross_wei=int(net_wei),
+                    latency_ms=round(latency_ms, 3),
+                    decision="REJECT_NONPROFIT",
+                ).info("Path evaluated")
             return
 
         # Build the structured telemetry strings.
@@ -795,7 +827,7 @@ class GraphArbEngine:
         gross_spread_pct = ((out - amount_in) / amount_in) * 100
         trade_size_usd = (amount_in / 1e18) * weth_price
 
-        self.logger.info(
+        logger.info(
             "[ROUTE] %s\n"
             "\t[LATENCY] Graph Discovery: %.2f ms | QuoterV2 RPC: %.2f ms | "
             "Total: %.2f ms\n"
@@ -814,6 +846,39 @@ class GraphArbEngine:
             net_profit_wei,
             decision,
         )
+
+        # AI-readable structured twin of the telemetry block above — lands in
+        # logs/telemetry.jsonl (serialize=True) for profitability debugging.
+        # Numbers are kept as raw wei to preserve precision.
+        grid_struct = []
+        for s, v in grid_matrix.items():
+            grid_struct.append(
+                {
+                    "input_wei": int(s),
+                    "output_wei": None if v == "REVERT" else int(v),
+                    "gross_wei": None if v == "REVERT" else int(v - s),
+                }
+            )
+        tel.bind(
+            event="cycle_eval",
+            route=hop_labels,
+            fee_tiers_bps=list(fee_tiers),
+            latency_ms={
+                "discovery": round(discovery_ms, 3),
+                "quote": round(latency_ms, 3),
+                "total": round(total_ms, 3),
+            },
+            grid=grid_struct,
+            economics={
+                "amount_in_wei": int(amount_in),
+                "out_wei": int(out),
+                "gas_cost_wei": int(estimated_gas_cost_wei),
+                "net_ev_wei": int(net_profit_wei),
+                "net_ev_usd": round(net_usd, 4),
+                "gross_spread_pct": round(gross_spread_pct, 4),
+            },
+            decision=decision,
+        ).info("Cycle evaluated")
 
         if decision != "EXECUTE":
             # Positive gross revenue but execution gate rejected (gas eats
@@ -972,11 +1037,11 @@ class ProcessBSniper:
                 break
             if not self._running:
                 break
-            logger.info(
-                "[HEARTBEAT] Graph active. Evaluated %d potential "
-                "routing cycles in the last 60s.",
-                self.cycles_evaluated,
-            )
+            tel.bind(
+                event="heartbeat",
+                cycles_evaluated=self.cycles_evaluated,
+                graph_mode=True,
+            ).info("Graph discovery heartbeat")
             self.cycles_evaluated = 0
 
     async def run(self, scan_interval: float = 1.0) -> None:
